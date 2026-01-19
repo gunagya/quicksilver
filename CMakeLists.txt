@@ -114,6 +114,7 @@ set(SIM_FILES
     src/sim/compute_base.cpp
     src/sim/compute_subsystem.cpp
     src/sim/factory.cpp
+    src/sim/grid_router.cpp
     src/sim/memory_subsystem.cpp
     src/sim/operable.cpp
     src/sim/storage.cpp

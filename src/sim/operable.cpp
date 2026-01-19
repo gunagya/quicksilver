@@ -43,10 +43,7 @@ OPERABLE::tick()
         leap_ += clock_scale_;
         current_cycle_++;
     }
-    else
-    {
-        leap_ -= 1.0;
-    }
+    leap_ -= 1.0;
 }
 
 cycle_type

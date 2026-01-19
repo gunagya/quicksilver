@@ -4,7 +4,9 @@
  * */
 
 #include "sim/factory.h"
+#include "sim/grid_router.h"
 
+#include <algorithm>
 #include <cassert>
 #include <iomanip>
 #include <random>
@@ -121,7 +123,7 @@ T_DISTILLATION::production_step()
 {
     const bool is_lowest_level = previous_level.empty();
 
-    size_t magic_states_needed = (step_ == 0) ? initial_input_count : 1; 
+    size_t magic_states_needed = (step_ == 0) ? std::min(initial_input_count,1ul) : 1; 
     const double p_sampled = FPR(GL_RNG);
 
     // get the magic states that we need and compute the error probability of these magic states.
@@ -131,9 +133,20 @@ T_DISTILLATION::production_step()
         // can get all magic states via injection -- check if an error occurs.
         // If so, then restart production
         p_error = INJECTION_ERROR_PROBABILITY * magic_states_needed;
-    }
-    else
-    {
+    } else if (router_!= nullptr) {
+        // request magic states via the router
+        size_t magic_states_avail = 0;
+        while (magic_states_avail < magic_states_needed) {
+            auto factory = router_->request_magic_state();
+            if (factory == nullptr) {
+                // unable to get magic states this cycle
+                return false;
+            }
+            magic_states_avail++;
+            factory->consume(1);
+            p_error += factory->output_error_probability;
+        }
+    } else {
         size_t magic_states_avail = std::transform_reduce(previous_level.begin(), previous_level.end(),   
                                                             size_t{0},
                                                             std::plus<size_t>{},
@@ -181,6 +194,8 @@ T_CULTIVATION::T_CULTIVATION(double freq_khz,
 bool
 T_CULTIVATION::production_step()
 {
+    if (!enabled_)
+        return false;
     if (FPR(GL_RNG) <= probability_of_success)
         buffer_occupancy_++;
     return true;

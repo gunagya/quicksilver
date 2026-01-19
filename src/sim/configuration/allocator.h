@@ -20,6 +20,7 @@ struct FACTORY_ALLOCATION
 {
     std::vector<T_FACTORY_BASE*> first_level;
     std::vector<T_FACTORY_BASE*> second_level;
+    GRID_ROUTER* router_{nullptr};
 
     FACTORY_ALLOCATION() =default;
     FACTORY_ALLOCATION(const FACTORY_ALLOCATION&) =default;

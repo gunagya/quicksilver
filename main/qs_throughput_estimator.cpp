@@ -8,6 +8,7 @@
 #include "sim.h"
 #include "sim/configuration/allocator.h"
 #include "sim/factory.h"
+#include "sim/grid_router.h"
 #include "sim/operable.h"
 
 #include <algorithm>
@@ -29,7 +30,7 @@ uint64_t   SIM_MAGIC_STATES_CONSUMED{0};
 /*
  * Simulation functions:
  * */
-void sim_init(sim::configuration::FACTORY_ALLOCATION&);
+void sim_init(sim::configuration::FACTORY_ALLOCATION&, bool with_router = false);
 void sim_tick(sim::configuration::FACTORY_ALLOCATION&);
 void sim_cleanup(sim::configuration::FACTORY_ALLOCATION&);
 
@@ -43,10 +44,12 @@ main(int argc, char* argv[])
 {
     int64_t physical_qubit_budget;
     int64_t sim_cycles;
+    bool    enable_router;
 
     ARGPARSE()
         .optional("-q", "--budget", "Physical qubit budget", physical_qubit_budget, 12'000)
         .optional("-c", "--cycles", "Number of simulation cycles", sim_cycles, 1'000'000)
+        .optional("-r", "--enable-router", "Enable grid router in the simulation", enable_router, false)
         .parse(argc, argv);
 
     /*
@@ -59,17 +62,17 @@ main(int argc, char* argv[])
     l1_spec.is_cultivation = true;
     l1_spec.syndrome_extraction_round_time_ns = 1200;
     l1_spec.buffer_capacity = 1;
-    l1_spec.output_error_rate = 1e-6;
-    l1_spec.escape_distance = 13;
-    l1_spec.round_length = 25;
-    l1_spec.probability_of_success = 0.2;
+    l1_spec.output_error_rate = 2e-6;
+    l1_spec.escape_distance = 11;
+    l1_spec.round_length = 22;
+    l1_spec.probability_of_success = 0.35;
 
     sim::configuration::FACTORY_SPECIFICATION l2_spec;
     l2_spec.is_cultivation = false;
     l2_spec.syndrome_extraction_round_time_ns = 1200;
     l2_spec.buffer_capacity = 4;
     l2_spec.output_error_rate = 1e-12;
-    l2_spec.dx = 25;
+    l2_spec.dx = 23;
     l2_spec.dz = 11;
     l2_spec.dm = 11;
     l2_spec.input_count = 4;
@@ -88,7 +91,7 @@ main(int argc, char* argv[])
     /*
      * Run simulation:
      * */
-    sim_init(alloc);
+    sim_init(alloc, enable_router);
     sim::GL_SIM_WALL_START = std::chrono::steady_clock::now();
 
     while (SIM_CURRENT_CYCLE < sim_cycles)
@@ -132,10 +135,15 @@ namespace
 ////////////////////////////////////////////////////////////
 
 void
-sim_init(sim::configuration::FACTORY_ALLOCATION& alloc)
+sim_init(sim::configuration::FACTORY_ALLOCATION& alloc, bool with_router)
 {
     std::vector<sim::OPERABLE*> operables;
-    operables.reserve(alloc.first_level.size() + alloc.second_level.size());
+    operables.reserve(alloc.first_level.size() + alloc.second_level.size()+1);
+    if (with_router) {
+        alloc.router_ = new sim::GRID_ROUTER(alloc, alloc.second_level[0]->freq_khz);
+        static_cast<sim::T_DISTILLATION*>(alloc.second_level[0])->add_grid_router(alloc.router_);
+        operables.push_back(alloc.router_);
+    }
     std::copy(alloc.first_level.begin(), alloc.first_level.end(), std::back_inserter(operables));
     std::copy(alloc.second_level.begin(), alloc.second_level.end(), std::back_inserter(operables));
     sim::coordinate_clock_scale(operables);
@@ -149,6 +157,10 @@ sim_tick(sim::configuration::FACTORY_ALLOCATION& alloc)
 {
     for (auto* f : alloc.first_level)
         f->tick();
+    if (alloc.router_ != nullptr) {
+        // alloc.router_->print_grid(std::cout);
+        alloc.router_->tick();
+    }
     for (auto* f : alloc.second_level)
         f->tick();
 
@@ -171,6 +183,7 @@ sim_cleanup(sim::configuration::FACTORY_ALLOCATION& alloc)
         delete f;
     for (auto* f : alloc.second_level)
         delete f;
+    delete alloc.router_;
 }
 
 ////////////////////////////////////////////////////////////

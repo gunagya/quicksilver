@@ -52,7 +52,8 @@ magic_state_distillation_physical_qubit_count(size_t input_count, size_t output_
 {
     const size_t total_logical_qubits = input_count+output_count;
     const size_t assumed_routing_overhead = total_logical_qubits/2;
-    return (total_logical_qubits+assumed_routing_overhead) * surface_code_physical_qubit_count(dx, dz);
+    return (input_count+assumed_routing_overhead) * surface_code_physical_qubit_count(dx, dz)
+         + output_count * surface_code_physical_qubit_count(dx);
 }
 
 ////////////////////////////////////////////////////////////

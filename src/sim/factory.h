@@ -14,6 +14,8 @@
 namespace sim
 {
 
+class GRID_ROUTER;
+
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
 
@@ -40,6 +42,8 @@ protected:
      * Number of magic states in local buffer (max `buffer_capacity`)
      * */
     size_t buffer_occupancy_{0};
+
+    bool enabled_{true};
 public:
     T_FACTORY_BASE(std::string_view name, 
                     double freq_khz, 
@@ -54,6 +58,9 @@ public:
     void print_deadlock_info(std::ostream&) const override;
 
     size_t buffer_occupancy() const;
+
+    void enable() { enabled_ = true; };
+    void disable() { enabled_ = false; };
 protected:
     long operate() override;
 
@@ -85,6 +92,8 @@ public:
     const size_t num_rotation_steps;
 private:
     size_t step_{0};
+    // Routing model for fetching magic states from previous level factories.
+    GRID_ROUTER* router_{nullptr};
 public:
     T_DISTILLATION(double freq_khz,
                     double output_error_prob,
@@ -94,6 +103,8 @@ public:
                     size_t num_rotation_steps);
 
     void print_deadlock_info(std::ostream&) const override;
+
+    void add_grid_router(GRID_ROUTER* router) { router_ = router; };
 private:
     bool production_step() override;
 };
