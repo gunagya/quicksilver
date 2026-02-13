@@ -51,7 +51,7 @@ public:
      * */
     const cycle_type load_latency;
     const cycle_type store_latency;
-private:
+protected:
     backing_buffer_type contents_;
 
     /*

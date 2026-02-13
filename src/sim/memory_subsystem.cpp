@@ -4,6 +4,7 @@
  * */
 
 #include "sim/memory_subsystem.h"
+#include "globals.h"
 #include "sim/routing_model/multi_channel_bus.h"
 
 #include <algorithm>
@@ -83,6 +84,15 @@ const std::vector<STORAGE*>&
 MEMORY_SUBSYSTEM::storages() const
 {
     return storages_;
+}
+
+////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////
+
+bool
+MEMORY_SUBSYSTEM::has_free_adapter_for(QUBIT* q) const
+{
+    return (*lookup(q))->has_free_adapter();
 }
 
 ////////////////////////////////////////////////////////////

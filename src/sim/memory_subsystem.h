@@ -46,6 +46,8 @@ public:
     QUBIT* retrieve_qubit(client_id_type, qubit_type) const;
 
     const std::vector<STORAGE*>& storages() const;
+
+    bool has_free_adapter_for(QUBIT*) const;
 private:
     /*
      * Returns an iterator to the `STORAGE*` containing

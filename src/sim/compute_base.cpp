@@ -118,8 +118,8 @@ COMPUTE_BASE::execute_instruction(inst_ptr inst, std::array<QUBIT*, 3>&& args)
 COMPUTE_BASE::execute_result_type
 COMPUTE_BASE::do_h_or_s_gate(inst_ptr inst, QUBIT* q)
 {
-    _update_available_cycle({q}, current_cycle()+2);
-    return execute_result_type{.progress=1, .latency=2};
+    _update_available_cycle({q}, current_cycle()+1);
+    return execute_result_type{.progress=1, .latency=1};
 }
 
 ////////////////////////////////////////////////////////////
@@ -151,7 +151,7 @@ COMPUTE_BASE::do_t_like_gate(inst_ptr inst, QUBIT* q)
     else if (GL_T_GATE_DO_AUTOCORRECT)
         latency = 2;
     else
-        latency = (GL_RNG() & 1) ? 4 : 2;
+        latency = 1;
     _update_available_cycle({q}, current_cycle() + latency);
     s_t_gates++;
     return execute_result_type{.progress=1, .latency=latency};

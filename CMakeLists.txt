@@ -118,6 +118,8 @@ set(SIM_FILES
     src/sim/operable.cpp
     src/sim/rotation_subsystem.cpp
     src/sim/storage.cpp
+    src/sim/yoked_codes/yoked_cold_storage.cpp
+    src/sim/yoked_codes/yoked_architecture.cpp
     src/sim.cpp)
 
 ###################################################
@@ -195,6 +197,19 @@ add_executable(qs_tpest main/qs_throughput_estimator.cpp)
 target_include_directories(qs_tpest PRIVATE "src")
 target_compile_options(qs_tpest PRIVATE ${COMPILE_OPTIONS})
 target_link_libraries(qs_tpest PRIVATE qs_simulator)
+
+###################################################
+###################################################
+
+# Yoked simulator (yoked_simulator)
+
+add_executable(yoked_simulator src/sim/yoked_codes/yoked_simulator.cpp
+                            src/compiler/memory_scheduler.cpp
+                            src/compiler/memory_scheduler/eif.cpp
+                            src/compiler/memory_scheduler/hint.cpp)
+target_include_directories(yoked_simulator PRIVATE "src")
+target_compile_options(yoked_simulator PRIVATE ${COMPILE_OPTIONS})
+target_link_libraries(yoked_simulator PRIVATE qs_simulator)
 
 ###################################################
 ###################################################
