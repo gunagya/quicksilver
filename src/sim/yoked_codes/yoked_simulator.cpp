@@ -28,9 +28,8 @@ namespace
 constexpr size_t COMPUTE_CODE_DISTANCE{25};
 constexpr size_t MEMORY_CODE_DISTANCE{25};
 
-constexpr size_t MEMORY_BLOCK_CAPACITY = 1000;
-
-std::vector<std::string> split_trace_string(std::string);
+constexpr uint64_t compute_syndrome_extraction_round_time_ns = 1200;
+constexpr uint64_t memory_syndrome_extraction_round_time_ns = 1200;
 
 /*
  * Compiles the given trace by performing memory access scheduler. The `trace`
@@ -56,11 +55,9 @@ main(int argc, char* argv[])
 
     int64_t print_progress;
     bool    jit;
+    bool    baseline;
 
     int64_t compute_local_memory_capacity;
-    int64_t compute_syndrome_extraction_round_time_ns;
-
-    int64_t memory_syndrome_extraction_round_time_ns;
 
     int64_t factory_l2_buffer_capacity;
     int64_t factory_physical_qubit_budget;
@@ -70,17 +67,10 @@ main(int argc, char* argv[])
 
         .optional("-pp", "--print-progress", "Progress print frequency (in compute cycles)", print_progress, 0)
         .optional("-jit", "", "Just-in-time compilation for an input source file", jit, false)
+        .optional("", "--baseline", "Use baseline STORAGE instead of YOKED_COLD_STORAGE for memory blocks", baseline, false)
 
         .optional("-a", "--compute-local-memory-capacity", "Number of active qubits in the compute subsystem's local memory", 
                       compute_local_memory_capacity, 12)
-        .optional("", "--compute-syndrome-extraction-round-time-ns", 
-                      "Syndrome extraction round latency for surface code (in nanoseconds)", 
-                      compute_syndrome_extraction_round_time_ns, 1200)
-        .optional("-ttpl", "--t-teleport-limit", "Max number of T gate teleportations after initial T gate", sim::GL_T_GATE_TELEPORTATION_MAX, 0)
-
-        .optional("", "--memory-syndrome-extraction-round-time-ns", 
-                      "Syndrome extraction round latency for the QLDPC code (in nanoseconds)", 
-                      memory_syndrome_extraction_round_time_ns, 1200)
 
         .optional("", "--factory-l2-buffer-capacity", "Number of magic states stored in an L2 factory buffer",
                       factory_l2_buffer_capacity, 4)
@@ -129,16 +119,47 @@ main(int argc, char* argv[])
     // determine number of qubits for trace:
     size_t total_qubits = get_number_of_qubits(trace_file);
     size_t main_memory_qubits = total_qubits - compute_local_memory_capacity;
-    const size_t num_blocks = main_memory_qubits == 0 ? 0 : (main_memory_qubits-1) / MEMORY_BLOCK_CAPACITY + 1;
     const double m_freq_khz = sim::compute_freq_khz(MEMORY_CODE_DISTANCE * memory_syndrome_extraction_round_time_ns);
-    std::vector<sim::STORAGE*> memory_blocks(num_blocks);
-    for (size_t i = 0; i < num_blocks; i++)
-    {
-        memory_blocks[i] = new sim::YOKED_COLD_STORAGE(m_freq_khz, 
-                                            main_memory_qubits,
-                                            11,
-                                            MEMORY_CODE_DISTANCE);
-    }
+    std::vector<sim::STORAGE*> memory_blocks;
+    size_t num_blocks;
+
+    if (baseline) {
+        // Baseline: use standard STORAGE class
+        const int memory_block_capacity = 1000;
+        num_blocks = main_memory_qubits == 0 ? 0 : (main_memory_qubits-1) / memory_block_capacity + 1;
+        memory_blocks.resize(num_blocks);
+
+        for (size_t i = 0; i < num_blocks; i++)
+        {
+            memory_blocks[i] = new sim::STORAGE(m_freq_khz, 
+                                            /*memory_block_physical_qubits=*/0,
+                                            memory_block_capacity,
+                                            MEMORY_CODE_DISTANCE,
+                                            1, // num adapters
+                                            8, // load latency
+                                            1 // store latency
+                                            );
+        }
+    } else {
+        // Yoked: use YOKED_COLD_STORAGE class
+        const int memory_block_capacity = 194;
+        num_blocks = main_memory_qubits == 0 ? 0 : (main_memory_qubits-1) / memory_block_capacity + 1;
+        memory_blocks.resize(num_blocks);
+
+        for (size_t i = 0; i < num_blocks - 1; i++)
+        {
+            memory_blocks[i] = new sim::YOKED_COLD_STORAGE(m_freq_khz, 
+                                                memory_block_capacity,
+                                                11,
+                                                MEMORY_CODE_DISTANCE);
+        }
+        if (num_blocks > 0) {
+            memory_blocks[num_blocks - 1] = new sim::YOKED_COLD_STORAGE(m_freq_khz, 
+                                                main_memory_qubits - memory_block_capacity * (num_blocks - 1),
+                                                11,
+                                                MEMORY_CODE_DISTANCE);
+        }
+    }   
 
     sim::MEMORY_SUBSYSTEM* memory_subsystem = new sim::MEMORY_SUBSYSTEM(std::move(memory_blocks));
 
@@ -210,6 +231,15 @@ main(int argc, char* argv[])
     sim::print_stats_for_factories(std::cout, "L1_FACTORY", alloc.first_level);
     sim::print_stats_for_factories(std::cout, "L2_FACTORY", alloc.second_level);
 
+    // Print error stats for yoked cold storages
+    for (auto* s : memory_subsystem->storages())
+    {
+        if (auto* yoke_storage = dynamic_cast<sim::YOKED_COLD_STORAGE*>(s))
+        {
+            yoke_storage->error_stats();
+        }
+    }
+
     print_stat_line(std::cout, "COMPUTE_PHYSICAL_QUBITS", compute_physical_qubits);
     print_stat_line(std::cout, "MEMORY_PHYSICAL_QUBITS", memory_physical_qubits);
     print_stat_line(std::cout, "FACTORY_PHYSICAL_QUBITS", factory_physical_qubits);
@@ -231,28 +261,6 @@ main(int argc, char* argv[])
 
 namespace
 {
-
-////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////
-
-std::vector<std::string>
-split_trace_string(std::string s)
-{
-    std::vector<std::string> result;
-    size_t start = 0;
-    size_t end = s.find(';');
-
-    while (end != std::string::npos) {
-        result.push_back(s.substr(start, end - start));
-        start = end + 1;
-        end = s.find(';', start);
-    }
-
-    // Add the last token (or the entire string if no semicolon was found)
-    result.push_back(s.substr(start));
-
-    return result;
-}
 
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////

@@ -47,8 +47,6 @@ public:
 
     const std::vector<STORAGE*>& storages() const;
 
-    bool has_free_adapter_for(QUBIT*) const;
-private:
     /*
      * Returns an iterator to the `STORAGE*` containing
      * the given qubit.

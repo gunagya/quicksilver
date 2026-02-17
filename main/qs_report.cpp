@@ -13,20 +13,6 @@
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
 
-template <class T> void
-print_stat_line(std::ostream& out, std::string name, T value)
-{
-    out << std::setw(64) << std::left << name;
-    if constexpr (std::is_floating_point<T>::value)
-        out << std::setw(12) << std::right << std::fixed << std::setprecision(8) << value;
-    else
-        out << std::setw(12) << std::right << value;
-    out << "\n";
-}
-
-////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////
-
 struct ProgramStats
 {
     uint32_t num_qubits{0};
@@ -37,13 +23,13 @@ struct ProgramStats
     uint64_t h_gates{0};
     uint64_t cx_gates{0};
     uint64_t mswap_instructions{0};
-    uint64_t mprefetch_instructions{0};
+    uint64_t mprefetch_instructions{0}; 
 };
 
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
 
-ProgramStats analyze_binary_file(const std::string& input_file)
+ProgramStats analyze_binary_file(const std::string& input_file, uint64_t instruction_limit = 0)
 {
     ProgramStats stats;
     
@@ -55,23 +41,28 @@ ProgramStats analyze_binary_file(const std::string& input_file)
     
     std::cout << "[ QS_REPORT ] Reading binary file: " << input_file << std::endl;
     std::cout << "[ QS_REPORT ] Number of qubits: " << stats.num_qubits << std::endl;
+    if (instruction_limit > 0) {
+        std::cout << "[ QS_REPORT ] Instruction limit: " << instruction_limit << std::endl;
+    }
     
     // Read and analyze each instruction
     while (!generic_strm_eof(istrm))
     {
-        INSTRUCTION::io_encoding enc;
-
-        // Try to read the instruction
-        enc.read_write([&istrm] (void* buf, size_t size) {
-            return generic_strm_read(istrm, buf, size);
-        });
+        // Check instruction limit
+        if (instruction_limit > 0 && stats.total_instructions >= instruction_limit) {
+            std::cout << "[ QS_REPORT ] Reached instruction limit of " << instruction_limit << std::endl;
+            break;
+        }
+        
+        // Read instruction from stream
+        INSTRUCTION* inst_ptr = read_instruction_from_stream(istrm);
 
         // If we hit EOF during reading, break
-        if (generic_strm_eof(istrm))
+        if (inst_ptr == nullptr || generic_strm_eof(istrm))
             break;
             
-        // Create instruction from encoding
-        INSTRUCTION inst(std::move(enc));
+        // Get reference to instruction
+        INSTRUCTION& inst = *inst_ptr;
         
         if (is_software_instruction(inst.type))
             continue;
@@ -108,13 +99,7 @@ ProgramStats analyze_binary_file(const std::string& input_file)
                 break;
 
             case INSTRUCTION::TYPE::MSWAP:
-            case INSTRUCTION::TYPE::MSWAP_C:
                 stats.mswap_instructions++;
-                stats.unrolled_instructions++;
-                break;
-
-            case INSTRUCTION::TYPE::MPREFETCH:
-                stats.mprefetch_instructions++;
                 stats.unrolled_instructions++;
                 break;
 
@@ -162,6 +147,8 @@ ProgramStats analyze_binary_file(const std::string& input_file)
         // Print progress every 1M instructions
         if (stats.total_instructions % 1000000 == 0)
             std::cout << "[ QS_REPORT ] Processed " << stats.total_instructions << " instructions..." << std::endl;
+        
+        delete inst_ptr;
     }
     
     generic_strm_close(istrm);
@@ -177,14 +164,16 @@ ProgramStats analyze_binary_file(const std::string& input_file)
 int main(int argc, char** argv)
 {
     std::string input_file;
+    int64_t instruction_limit = 0;
     
     ARGPARSE()
         .required("input-file", "compressed binary program file (.bin, .gz, .xz)", input_file)
+        .optional("-i", "--instruction-limit", "Maximum number of instructions to read (0 = unlimited)", instruction_limit, (int64_t)0)
         .parse(argc, argv);
     
     try
     {
-        ProgramStats stats = analyze_binary_file(input_file);
+        ProgramStats stats = analyze_binary_file(input_file, (uint64_t)instruction_limit);
         
         // Print the report
         std::cout << "\n";

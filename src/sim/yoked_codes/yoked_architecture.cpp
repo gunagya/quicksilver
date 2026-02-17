@@ -42,9 +42,8 @@ YOKED_ARCHITECTURE::YOKED_ARCHITECTURE(double freq_khz,
     std::copy(memory_hierarchy_->storages().begin(), memory_hierarchy_->storages().end(), std::back_inserter(all_storage));
     storage_striped_initialization(all_storage, qubits_by_client, 1);
 
-    // Initialize non-Clifford readiness: qubits starting in local memory are ready, 
-    // qubits in cold storage will be marked false when loaded.
-    for (QUBIT* q : local_memory_->contents()) {
+    // Initialize non-Clifford readiness for ALL qubits
+    for (QUBIT* q : client_.qubits()) {
         can_operate_non_clifford_[q] = true;
     }
 }
@@ -76,7 +75,7 @@ YOKED_ARCHITECTURE::fetch_and_execute_instructions_from_client(CLIENT* c)
                                 // Check if memory request can be served.
                                 if (is_memory_access(inst->type)) {
                                     QUBIT* fetched_qubit = memory_hierarchy_->retrieve_qubit(0, inst->q_begin()[0]);
-                                    ready &= memory_hierarchy_->has_free_adapter_for(fetched_qubit);
+                                    ready &= (*memory_hierarchy_->lookup(fetched_qubit))->has_free_adapter();
                                 } else {
                                     // Check if all qubits are in local memory for non-memory instructions.
                                     if(!std::all_of(inst->q_begin(), inst->q_end(),
@@ -87,9 +86,18 @@ YOKED_ARCHITECTURE::fetch_and_execute_instructions_from_client(CLIENT* c)
                                         throw std::runtime_error("YOKED_ARCHITECTURE::fetch_and_execute_instructions_from_client: instruction with qubits not in local memory reached execution stage");
                                 }
                                 // If this is a T or rotation gate, check for magic state availability and non-Clifford readiness.
-                                if (is_t_like_instruction(inst->type) || is_rotation_instruction(inst->type) && is_t_like_instruction(inst->current_uop()->type)) {
+                                if (is_t_like_instruction(inst->type) 
+                                    || is_rotation_instruction(inst->type) && is_t_like_instruction(inst->current_uop()->type)
+                                    || is_toffoli_like_instruction(inst->type) && is_t_like_instruction(inst->current_uop()->type)) {
                                     ready &= count_available_magic_states() > 0;
                                     ready &= can_operate_non_clifford_.at(c->qubits()[inst->q_begin()[0]]);
+                                }
+
+                                if (is_cx_like_instruction(inst->type) 
+                                    || is_toffoli_like_instruction(inst->type) && is_cx_like_instruction(inst->current_uop()->type)) {
+                                    // For CX-like gates, ensure both control and target are ready for non-Clifford operations
+                                    ready &= can_operate_non_clifford_.at(c->qubits()[inst->q_begin()[0]]); // control
+                                    ready &= can_operate_non_clifford_.at(c->qubits()[inst->q_begin()[1]]); // target
                                 }
 
                                 return ready;
@@ -150,12 +158,15 @@ YOKED_ARCHITECTURE::setup_yoke_callbacks()
 YOKED_ARCHITECTURE::execute_result_type
 YOKED_ARCHITECTURE::do_memory_access(inst_ptr inst, QUBIT* ld, QUBIT* st)
 {
+    // Before the swap, check if ld is coming from yoked cold storage
+    bool loading_from_yoked = dynamic_cast<YOKED_COLD_STORAGE*>(*memory_hierarchy_->lookup(ld));
+
     // Execute the memory access using base class implementation
     auto result = COMPUTE_BASE::do_memory_access(inst, ld, st);
 
     // If successful and loading from yoked cold storage, mark qubit as not ready for non-Clifford
     // It will be marked ready when the yoke cycle completes
-    if (result.progress) {
+    if (result.progress && loading_from_yoked) {
         can_operate_non_clifford_[ld] = false;
     }
 

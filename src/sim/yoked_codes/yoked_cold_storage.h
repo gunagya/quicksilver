@@ -34,6 +34,8 @@ class YOKED_COLD_STORAGE : public sim::STORAGE
     // Override to track loaded qubits
     access_result_type do_memory_access(QUBIT* ld, QUBIT* st) override;
 
+    void error_stats();
+
   protected:
     const size_t grid_length_;
     const size_t yoke_cycle_rounds_;

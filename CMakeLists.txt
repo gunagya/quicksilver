@@ -168,6 +168,16 @@ endif()
 ###################################################
 ###################################################
 
+# Report tool (qs_report)
+
+add_executable(qs_report main/qs_report.cpp)
+target_include_directories(qs_report PRIVATE "src")
+target_compile_options(qs_report PRIVATE ${COMPILE_OPTIONS})
+target_link_libraries(qs_report PRIVATE qs_common)
+
+###################################################
+###################################################
+
 # Memory scheduler (qs_memory_scheduler)
 
 add_executable(qs_memory_scheduler main/qs_memory_scheduler.cpp

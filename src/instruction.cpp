@@ -33,7 +33,7 @@ constexpr size_t NUM_CCX_UOPS{NUM_CCZ_UOPS+2};
 struct io_encoding
 {
     constexpr static size_t MAX_QUBITS{INSTRUCTION::MAX_QUBITS};
-    constexpr static size_t UROTSEQ_CAPACITY{256};
+    constexpr static size_t UROTSEQ_CAPACITY{512};
     constexpr static size_t MAX_CORR_UROTSEQ{4};
 
     using fpa_type = INSTRUCTION::fpa_type;

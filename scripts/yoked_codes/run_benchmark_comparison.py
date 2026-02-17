@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Benchmark comparison script for EIF vs HINT memory schedulers.
-Runs memory_scheduler, quicksilver, and yoked_simulator on benchmarks and compares IPC.
+Runs memory_scheduler, yoked_simulator (with baseline and yoked architecture) on benchmarks and compares IPC.
 """
 
 import subprocess
@@ -14,7 +14,7 @@ from pathlib import Path
 BUILD_DIR = Path("/Users/gunagya/Desktop/Research Work/routing-space-sliding/simulators/routing-simulator/deps/quicksilver/build")
 BENCHMARK_DIR = Path("/Users/gunagya/Desktop/Research Work/routing-space-sliding/benchmarks")
 MEM_COMPILED_OUTPUT_DIR = Path("/Users/gunagya/Desktop/Research Work/routing-space-sliding/simulators/routing-simulator/deps/quicksilver/benchmarks/bin")
-CAPACITY = 16
+CAPACITY = 4
 CYCLE_LIMIT = 1_000_000  # 1M cycles for simulation
 COMPILE_MEMORY = False  # Set to False if input files already have memory instructions compiled
 
@@ -26,6 +26,7 @@ BENCHMARKS = [
     ("compressed/BQ_e_cr2_120_d100_t1M_T5M.xz", 121, 200000, "cr2"),
     ("binary/e_h60_121_td_1000by40.bin", 121, 250000, "e_h60"),
     ("compressed/BQ_shor_rsa256_iter_4.xz", 514, 2000000, "shor_rsa256"),
+    ("binary/sat_grover_schoning_n784_new.bin", 784, 200000, "sat_grover_schoning"),
 ]
 
 def run_command(cmd, description):
@@ -111,37 +112,39 @@ def main():
                     str(input_path),
                     str(output_binary),
                     "-c", str(CAPACITY),
-                    "-s", str(scheduler_flag)
+                    "-s", str(scheduler_flag),
+                    "--hint-lookahead-depth", "512"
                 ]
                 
                 mem_output = run_command(mem_sched_cmd, f"Memory scheduler ({scheduler_name})")
                 if mem_output is None:
                     print(f"Failed to run memory scheduler for {scheduler_name}")
-                    result_row[f'{scheduler_name}_quicksilver_ipc'] = None
+                    result_row[f'{scheduler_name}_baseline_ipc'] = None
                     result_row[f'{scheduler_name}_yoked_ipc'] = None
                     continue
             else:
                 # Use input file directly (assume it's already compiled)
                 if not output_binary.exists():
                     print(f"Warning: Expected pre-compiled file not found: {output_binary}")
-                    result_row[f'{scheduler_name}_quicksilver_ipc'] = None
+                    result_row[f'{scheduler_name}_baseline_ipc'] = None
                     result_row[f'{scheduler_name}_yoked_ipc'] = None
                     continue
                 print(f"Using pre-compiled binary: {output_binary}")
             
-            # Step 2: Run quicksilver simulator
-            qs_cmd = [
-                "./quicksilver",
+            # Step 2: Run yoked_simulator with baseline flag
+            baseline_cmd = [
+                "./yoked_simulator",
                 str(output_binary),
                 str(CYCLE_LIMIT),
                 "-a", str(CAPACITY),
-                "-f", str(factory_size)
+                "-f", str(factory_size),
+                "--baseline"
             ]
             
-            qs_output = run_command(qs_cmd, f"Quicksilver simulator ({scheduler_name})")
-            qs_ipc = extract_ipc(qs_output)
-            result_row[f'{scheduler_name}_quicksilver_ipc'] = qs_ipc
-            print(f"Quicksilver IPC ({scheduler_name}): {qs_ipc}")
+            baseline_output = run_command(baseline_cmd, f"Yoked simulator baseline ({scheduler_name})")
+            baseline_ipc = extract_ipc(baseline_output)
+            result_row[f'{scheduler_name}_baseline_ipc'] = baseline_ipc
+            print(f"Baseline IPC ({scheduler_name}): {baseline_ipc}")
             
             # Step 3: Run yoked_simulator
             yoked_cmd = [
@@ -168,8 +171,8 @@ def main():
     if results:
         fieldnames = [
             'benchmark', 'input_file', 'num_qubits', 'capacity',
-            'eif_quicksilver_ipc', 'eif_yoked_ipc',
-            'hint_quicksilver_ipc', 'hint_yoked_ipc'
+            'eif_baseline_ipc', 'eif_yoked_ipc',
+            'hint_baseline_ipc', 'hint_yoked_ipc'
         ]
         
         with open(csv_file, 'w', newline='') as f:
@@ -182,12 +185,12 @@ def main():
         # Print summary table
         print("\nSummary:")
         print("-" * 120)
-        print(f"{'Benchmark':<20} {'EIF QS IPC':<12} {'EIF Yoked IPC':<14} {'HINT QS IPC':<12} {'HINT Yoked IPC':<14}")
+        print(f"{'Benchmark':<20} {'EIF Baseline':<14} {'EIF Yoked IPC':<14} {'HINT Baseline':<14} {'HINT Yoked IPC':<14}")
         print("-" * 120)
         for row in results:
-            print(f"{row['benchmark']:<20} {row.get('eif_quicksilver_ipc', 'N/A')!s:<12} "
+            print(f"{row['benchmark']:<20} {row.get('eif_baseline_ipc', 'N/A')!s:<14} "
                   f"{row.get('eif_yoked_ipc', 'N/A')!s:<14} "
-                  f"{row.get('hint_quicksilver_ipc', 'N/A')!s:<12} "
+                  f"{row.get('hint_baseline_ipc', 'N/A')!s:<14} "
                   f"{row.get('hint_yoked_ipc', 'N/A')!s:<14}")
         print("-" * 120)
     else:

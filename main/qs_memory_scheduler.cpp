@@ -37,7 +37,7 @@ main(int argc, char* argv[])
 
         .parse(argc, argv);
 
-    GL_USE_RPC_ISA = 1;
+    // GL_USE_RPC_ISA = 1;
 
     generic_strm_type istrm, ostrm;
     generic_strm_open(istrm, input_trace_file, "rb");

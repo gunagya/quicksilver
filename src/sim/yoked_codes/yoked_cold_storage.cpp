@@ -94,4 +94,11 @@ long YOKED_COLD_STORAGE::operate() {
     return 1;
 }
 
+void YOKED_COLD_STORAGE::error_stats() {
+    std::cout << "YOKED_COLD_STORAGE Error Stats:\n";
+    std::cout << "Total yoke cycles completed: " << ro_ << "\n";
+    std::cout << "RMQ r per yoke cycle: " << pow(sum_rpow4_ / ro_, 0.25) << "\n";
+    std::cout << "Ideal yoke cycle rounds: " << yoke_cycle_rounds_ << "\n";
+}
+
 } // namespace sim
