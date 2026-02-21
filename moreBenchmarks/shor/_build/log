@@ -1,0 +1,17 @@
+# dune exec ./modmult.exe -- -N 16777259 -a 3 --power 0
+# OCAMLPARAM: unset
+# Shared cache: enabled-except-user-rules
+# Shared cache location: /Users/kabirdubey/.cache/dune/db
+# Workspace root:
+# /Users/kabirdubey/Projects/walking/gtPaper/quicksilver/moreBenchmarks/shor
+# Auto-detected concurrency: 8
+# Dune context:
+#  { name = "default"
+#  ; kind = "default"
+#  ; profile = Dev
+#  ; merlin = true
+#  ; fdo_target_exe = None
+#  ; build_dir = In_build_dir "default"
+#  ; instrument_with = []
+#  }
+$ /Users/kabirdubey/.opam/default/bin/ocamlc.opt -config > /var/folders/j8/wb4qbgyj31l2f745vj9jk5sm0000gn/T/dune_a2a12b_output

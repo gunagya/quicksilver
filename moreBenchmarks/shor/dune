@@ -1,0 +1,17 @@
+;; Build configuration for Shor circuit extractors
+;; Derived from SQIR (https://github.com/inQWIRE/SQIR)
+;; MIT License
+
+;; Single modular multiplication extractor
+(executable
+  (name modmult)
+  (modules modmult)
+  (flags (:standard -w -32))
+  (libraries Shor_ml unix))
+
+;; Full QPE circuit extractor
+(executable
+  (name modexp)
+  (modules modexp)
+  (flags (:standard -w -32))
+  (libraries Shor_ml unix))
