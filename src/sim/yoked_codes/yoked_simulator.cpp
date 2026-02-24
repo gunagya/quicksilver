@@ -7,6 +7,7 @@
 #include "sim.h"
 #include "sim/configuration/resource_estimation.h"
 #include "sim/configuration/allocator.h"
+#include "sim/yoked_codes/yoked_1d_storage.h"
 #include "sim/yoked_codes/yoked_architecture.h"
 #include "sim/yoked_codes/yoked_cold_storage.h"
 #include "sim/memory_subsystem.h"
@@ -55,9 +56,10 @@ main(int argc, char* argv[])
 
     int64_t print_progress;
     bool    jit;
-    bool    baseline;
+    int64_t    baseline;
 
     int64_t compute_local_memory_capacity;
+    int64_t intermediate_storage_capacity;
 
     int64_t factory_l2_buffer_capacity;
     int64_t factory_physical_qubit_budget;
@@ -67,10 +69,12 @@ main(int argc, char* argv[])
 
         .optional("-pp", "--print-progress", "Progress print frequency (in compute cycles)", print_progress, 0)
         .optional("-jit", "", "Just-in-time compilation for an input source file", jit, false)
-        .optional("", "--baseline", "Use baseline STORAGE instead of YOKED_COLD_STORAGE for memory blocks", baseline, false)
+        .optional("", "--baseline", "Use baseline STORAGE instead of YOKED_COLD_STORAGE for memory blocks", baseline, 0)
 
         .optional("-a", "--compute-local-memory-capacity", "Number of active qubits in the compute subsystem's local memory", 
                       compute_local_memory_capacity, 12)
+        .optional("-i", "--intermediate-storage-capacity", "Number of qubits in intermediate (1D) storage (0 = no 1D storage)",
+                      intermediate_storage_capacity, 0)
 
         .optional("", "--factory-l2-buffer-capacity", "Number of magic states stored in an L2 factory buffer",
                       factory_l2_buffer_capacity, 4)
@@ -141,23 +145,36 @@ main(int argc, char* argv[])
                                             );
         }
     } else {
-        // Yoked: use YOKED_COLD_STORAGE class
+        // Yoked: use YOKED_COLD_STORAGE class, with optional 1D intermediate storage
         const int memory_block_capacity = 194;
-        num_blocks = main_memory_qubits == 0 ? 0 : (main_memory_qubits-1) / memory_block_capacity + 1;
+        size_t cold_storage_qubits = main_memory_qubits;
+        size_t has_1d_storage = 0;
+
+        if (intermediate_storage_capacity > 0) {
+            cold_storage_qubits -= intermediate_storage_capacity;
+            has_1d_storage = 1;
+        }
+
+        size_t num_cold_blocks = cold_storage_qubits == 0 ? 0 : (cold_storage_qubits - 1) / memory_block_capacity + 1;
+        num_blocks = has_1d_storage + num_cold_blocks;
         memory_blocks.resize(num_blocks);
 
-        for (size_t i = 0; i < num_blocks - 1; i++)
-        {
-            memory_blocks[i] = new sim::YOKED_COLD_STORAGE(m_freq_khz, 
-                                                memory_block_capacity,
-                                                11,
-                                                MEMORY_CODE_DISTANCE);
+        size_t idx = 0;
+        if (has_1d_storage) {
+            memory_blocks[idx++] = new sim::YOKED_1D_STORAGE(m_freq_khz,
+                                    4, // rows
+                                    intermediate_storage_capacity,
+                                    15, // inner code distance
+                                    MEMORY_CODE_DISTANCE);
         }
-        if (num_blocks > 0) {
-            memory_blocks[num_blocks - 1] = new sim::YOKED_COLD_STORAGE(m_freq_khz, 
-                                                main_memory_qubits - memory_block_capacity * (num_blocks - 1),
+        size_t remaining_cold_qubits = cold_storage_qubits;
+        for (size_t i = idx; i < num_blocks; i++) {
+            size_t block_capacity = std::min(remaining_cold_qubits, static_cast<size_t>(memory_block_capacity));
+            memory_blocks[i] = new sim::YOKED_COLD_STORAGE(m_freq_khz,
+                                                block_capacity,
                                                 11,
                                                 MEMORY_CODE_DISTANCE);
+            remaining_cold_qubits -= block_capacity;
         }
     }   
 
@@ -232,18 +249,16 @@ main(int argc, char* argv[])
     sim::print_stats_for_factories(std::cout, "L2_FACTORY", alloc.second_level);
 
     // Print error stats for yoked cold storages
-    for (auto* s : memory_subsystem->storages())
-    {
+    for (auto* s : memory_subsystem->storages()) {
         if (auto* yoke_storage = dynamic_cast<sim::YOKED_COLD_STORAGE*>(s))
-        {
             yoke_storage->error_stats();
-        }
+        else if (auto* yoke_storage = dynamic_cast<sim::YOKED_1D_STORAGE*>(s))
+            yoke_storage->error_stats();
     }
 
     print_stat_line(std::cout, "COMPUTE_PHYSICAL_QUBITS", compute_physical_qubits);
     print_stat_line(std::cout, "MEMORY_PHYSICAL_QUBITS", memory_physical_qubits);
     print_stat_line(std::cout, "FACTORY_PHYSICAL_QUBITS", factory_physical_qubits);
-
     /* cleanup simulation */
 
     delete yoked_arch;

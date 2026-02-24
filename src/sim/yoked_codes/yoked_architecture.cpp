@@ -9,8 +9,10 @@
 #include "sim/client.h"
 #include "sim/memory_subsystem.h"
 #include "sim/storage.h"
+#include "sim/yoked_codes/yoked_1d_storage.h"
 #include "sim/yoked_codes/yoked_cold_storage.h"
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace sim
@@ -34,17 +36,23 @@ YOKED_ARCHITECTURE::YOKED_ARCHITECTURE(double freq_khz,
                     memory),
     client_(client_trace_file, 0), simulation_instructions_(simulation_instructions)
 {
-    setup_yoke_callbacks();
-
     // initialize all the memory:
     std::vector<std::vector<QUBIT*>> qubits_by_client({client_.qubits()});
     std::vector<STORAGE*> all_storage{local_memory_.get()};
     std::copy(memory_hierarchy_->storages().begin(), memory_hierarchy_->storages().end(), std::back_inserter(all_storage));
     storage_striped_initialization(all_storage, qubits_by_client, 1);
 
-    // Initialize non-Clifford readiness for ALL qubits
-    for (QUBIT* q : client_.qubits()) {
+    for (QUBIT* q : client_.qubits())
         can_operate_non_clifford_[q] = true;
+    // Mark all qubits in cold storage as not ready for non-Clifford operations initially
+    for (auto* storage : memory_hierarchy_->storages()) {
+        if (auto* yoked_cold_storage = dynamic_cast<YOKED_COLD_STORAGE*>(storage))
+            for (QUBIT* q : yoked_cold_storage->contents())
+                can_operate_non_clifford_[q] = false;
+        else if (auto* yoked_1d_storage = dynamic_cast<YOKED_1D_STORAGE*>(storage)) {
+            yoked_1d_storage_ = yoked_1d_storage;
+            yoked_1d_storage_->set_memory_subsystem(memory);
+        }
     }
 }
 
@@ -53,7 +61,16 @@ YOKED_ARCHITECTURE::operate()
 {
     long progress{0};
 
-    /* Handle pending instructions for any active clients */
+    // Mark newly verified qubits from cold storage as ready for non-Clifford operations.
+    for (auto* storage : memory_hierarchy_->storages())
+        if (auto* yoked_cold_storage = dynamic_cast<YOKED_COLD_STORAGE*>(storage)) {
+            for (QUBIT* q : yoked_cold_storage->drain_newly_verified_qubits())
+                can_operate_non_clifford_[q] = true;
+            for (QUBIT* q : yoked_cold_storage->drain_newly_stored_qubits())
+                can_operate_non_clifford_[q] = false;
+        }
+
+    /* Handle pending instructions */
 
     progress += fetch_and_execute_instructions_from_client(&client_);
 
@@ -65,6 +82,10 @@ YOKED_ARCHITECTURE::operate()
 long
 YOKED_ARCHITECTURE::fetch_and_execute_instructions_from_client(CLIENT* c)
 {
+    if (yoked_1d_storage_!=nullptr && current_cycle()%dag_sample_rate == 0) {
+        yoked_1d_storage_->feed_memory_instructions(c->dag()->get_memory_instructions_upto_layers(dag_lookahead), c->qubits());
+    }
+
     auto front_layer = c->get_ready_instructions(
                             [&c, cc=current_cycle(), this] (const auto* inst)
                             {
@@ -135,52 +156,6 @@ YOKED_ARCHITECTURE::fetch_and_execute_instructions_from_client(CLIENT* c)
 
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
-
-void
-YOKED_ARCHITECTURE::setup_yoke_callbacks()
-{
-    // Set up callbacks for all yoked cold storage devices in the memory hierarchy
-    if (memory_hierarchy_ == nullptr)
-        return;
-        
-    for (auto* storage : memory_hierarchy_->storages()) {
-        auto* yoked_storage = dynamic_cast<YOKED_COLD_STORAGE*>(storage);
-        if (yoked_storage != nullptr) {
-            yoked_storage->set_yoke_complete_callback(
-                [this](const std::unordered_set<QUBIT*>& ready_qubits) {
-                    this->handle_yoke_complete(ready_qubits);
-                }
-            );
-        }
-    }
-}
-
-YOKED_ARCHITECTURE::execute_result_type
-YOKED_ARCHITECTURE::do_memory_access(inst_ptr inst, QUBIT* ld, QUBIT* st)
-{
-    // Before the swap, check if ld is coming from yoked cold storage
-    bool loading_from_yoked = dynamic_cast<YOKED_COLD_STORAGE*>(*memory_hierarchy_->lookup(ld));
-
-    // Execute the memory access using base class implementation
-    auto result = COMPUTE_BASE::do_memory_access(inst, ld, st);
-
-    // If successful and loading from yoked cold storage, mark qubit as not ready for non-Clifford
-    // It will be marked ready when the yoke cycle completes
-    if (result.progress && loading_from_yoked) {
-        can_operate_non_clifford_[ld] = false;
-    }
-
-    return result;
-}
-
-void
-YOKED_ARCHITECTURE::handle_yoke_complete(const std::unordered_set<QUBIT*>& ready_qubits)
-{
-    // Mark all qubits as ready for non-Clifford execution.
-    for (QUBIT* q : ready_qubits) {
-        can_operate_non_clifford_[q] = true;
-    }
-}
 
 void
 YOKED_ARCHITECTURE::retire_instruction(CLIENT* c, inst_ptr inst, cycle_type inst_latency)

@@ -120,6 +120,7 @@ set(SIM_FILES
     src/sim/storage.cpp
     src/sim/yoked_codes/yoked_cold_storage.cpp
     src/sim/yoked_codes/yoked_architecture.cpp
+    src/sim/yoked_codes/yoked_1d_storage.cpp
     src/sim.cpp)
 
 ###################################################

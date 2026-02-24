@@ -130,5 +130,33 @@ DAG::inst_count() const
     return inst_count_;
 }
 
+std::vector<DAG::inst_ptr>
+DAG::get_memory_instructions_upto_layers(size_t num_layers) const
+{
+    std::vector<inst_ptr> mem_insts;
+    for_each_instruction_in_layer_order(
+        [&mem_insts] (const inst_ptr inst)
+        {
+            if (is_memory_access(inst->type))
+                mem_insts.push_back(inst);
+        },
+        0, num_layers);
+    return mem_insts;
+}
+
+std::vector<DAG::inst_ptr>
+DAG::get_memory_instructions_upto_depth(size_t depth) const
+{
+    std::vector<inst_ptr> mem_insts;
+    for_each_instruction_upto_circuit_depth(
+        [&mem_insts] (const inst_ptr inst)
+        {
+            if (is_memory_access(inst->type))
+                mem_insts.push_back(inst);
+        },
+        depth);
+    return mem_insts;
+}
+
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////

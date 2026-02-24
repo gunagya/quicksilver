@@ -6,6 +6,7 @@
 #ifndef SIM_YOKED_CODES_YOKED_COLD_STORAGE_h
 #define SIM_YOKED_CODES_YOKED_COLD_STORAGE_h
 
+#include "globals.h"
 #include "sim/storage.h"
 #include <cstddef>
 #include <functional>
@@ -28,11 +29,12 @@ class YOKED_COLD_STORAGE : public sim::STORAGE
 
     YOKED_COLD_STORAGE(double freq_khz, size_t logical_qubit_count, size_t inner_code_distance, size_t effective_code_distance);
 
-    // Register callback to be invoked when yoke cycle completes
-    void set_yoke_complete_callback(yoke_complete_callback_t callback);
-
     // Override to track loaded qubits
     access_result_type do_memory_access(QUBIT* ld, QUBIT* st) override;
+
+    // Returns qubits that were newly verified since last drain.
+    std::vector<QUBIT*> drain_newly_verified_qubits();
+    std::vector<QUBIT*> drain_newly_stored_qubits();
 
     void error_stats();
 
@@ -53,7 +55,10 @@ class YOKED_COLD_STORAGE : public sim::STORAGE
     yoke_complete_callback_t yoke_complete_callback_{nullptr};
 
     // Track qubits loaded during current yoke cycle
-    std::unordered_set<QUBIT*> qubits_loaded_this_cycle_;
+    std::vector<QUBIT*> unverified_loaded_qubits_;
+    // Qubits newly verified this yoke cycle
+    std::vector<QUBIT*> newly_verified_qubits_;
+    std::vector<QUBIT*> newly_stored_qubits_;
 
     virtual long operate() override;
 };

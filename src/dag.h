@@ -30,6 +30,7 @@ public:
          * These variables are for `for_each_instruction_in_layer_order` (see below)
          * */
         mutable uint8_t         tmp_pred_count_{0};
+        mutable size_t          tmp_depth_{0};
         mutable size_t          last_generation_{0};
     };
 
@@ -87,6 +88,20 @@ public:
     void for_each_instruction_in_layer_order(const CALLBACK&, size_t min_layer, size_t max_layer) const;
 
     /*
+     * Executes the given callback for each instruction whose circuit depth
+     * is at most `max_depth`. The depth of a front layer instruction is 0.
+     * The depth of any other instruction is max(predecessor depth + predecessor score)
+     * where `score` approximates the duration of an instruction:
+     *  - rotation: 20
+     *  - toffoli-like: 10
+     *  - cx-like: 2
+     *  - software: 0
+     *  - otherwise: 1
+     * */
+    template <class CALLBACK>
+    void for_each_instruction_upto_circuit_depth(const CALLBACK&, size_t max_depth) const;
+
+    /*
      * Finds the earliest instruction dependent on the given instruction in the front layer
      * that satisfies the given predicate (not including the input instruction).
      *
@@ -100,6 +115,13 @@ public:
                                                                                 size_t max_layer) const;
 
     size_t inst_count() const;
+
+    /*
+     * Returns pointers to memory instructions (e.g. MSWAP)
+     * from the current front layer up to `num_layers` layers deep.
+     * */
+    std::vector<inst_ptr> get_memory_instructions_upto_layers(size_t num_layers) const;
+    std::vector<inst_ptr> get_memory_instructions_upto_depth(size_t depth) const;
 };
 
 ////////////////////////////////////////////////////////////

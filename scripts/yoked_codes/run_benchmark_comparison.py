@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Benchmark comparison script for EIF vs HINT memory schedulers.
-Runs memory_scheduler, yoked_simulator (with baseline and yoked architecture) on benchmarks and compares IPC.
+Benchmark comparison script for yoked architecture with varying intermediate storage sizes.
+Runs yoked_simulator with baseline once, then non-baseline with intermediate storage sizes 0, 8, 16, 24.
 """
 
 import subprocess
@@ -17,6 +17,7 @@ MEM_COMPILED_OUTPUT_DIR = Path("/Users/gunagya/Desktop/Research Work/routing-spa
 CAPACITY = 4
 CYCLE_LIMIT = 1_000_000  # 1M cycles for simulation
 COMPILE_MEMORY = False  # Set to False if input files already have memory instructions compiled
+INTERMEDIATE_STORAGE_SIZES = [0, 8, 16, 24]
 
 # List of benchmarks to process
 # Format: (input_file, num_qubits, factory_size, description)
@@ -98,67 +99,65 @@ def main():
             'capacity': CAPACITY,
         }
         
-        # Process with EIF and HINT schedulers
-        for scheduler_name, scheduler_flag in [("eif", 0), ("hint", 1)]:
-            print(f"\n--- Processing with {scheduler_name.upper()} scheduler ---")
-            
-            # Generate output binary name
-            output_binary = MEM_COMPILED_OUTPUT_DIR / f"{basename}_{scheduler_name}_c{CAPACITY}.bin"
-            
-            if COMPILE_MEMORY:
-                # Step 1: Run memory_scheduler
-                mem_sched_cmd = [
-                    "./qs_memory_scheduler",
-                    str(input_path),
-                    str(output_binary),
-                    "-c", str(CAPACITY),
-                    "-s", str(scheduler_flag),
-                    "--hint-lookahead-depth", "512"
-                ]
-                
-                mem_output = run_command(mem_sched_cmd, f"Memory scheduler ({scheduler_name})")
-                if mem_output is None:
-                    print(f"Failed to run memory scheduler for {scheduler_name}")
-                    result_row[f'{scheduler_name}_baseline_ipc'] = None
-                    result_row[f'{scheduler_name}_yoked_ipc'] = None
-                    continue
-            else:
-                # Use input file directly (assume it's already compiled)
-                if not output_binary.exists():
-                    print(f"Warning: Expected pre-compiled file not found: {output_binary}")
-                    result_row[f'{scheduler_name}_baseline_ipc'] = None
-                    result_row[f'{scheduler_name}_yoked_ipc'] = None
-                    continue
-                print(f"Using pre-compiled binary: {output_binary}")
-            
-            # Step 2: Run yoked_simulator with baseline flag
-            baseline_cmd = [
-                "./yoked_simulator",
+        # EIF scheduler only
+        scheduler_name = "eif"
+        print(f"\n--- Processing with {scheduler_name.upper()} scheduler ---")
+        
+        # Generate output binary name
+        output_binary = MEM_COMPILED_OUTPUT_DIR / f"{basename}_{scheduler_name}_c{CAPACITY}.bin"
+        
+        if COMPILE_MEMORY:
+            mem_sched_cmd = [
+                "./qs_memory_scheduler",
+                str(input_path),
                 str(output_binary),
-                str(CYCLE_LIMIT),
-                "-a", str(CAPACITY),
-                "-f", str(factory_size),
-                "--baseline"
+                "-c", str(CAPACITY),
+                "-s", "0",
+                "--hint-lookahead-depth", "512"
             ]
             
-            baseline_output = run_command(baseline_cmd, f"Yoked simulator baseline ({scheduler_name})")
-            baseline_ipc = extract_ipc(baseline_output)
-            result_row[f'{scheduler_name}_baseline_ipc'] = baseline_ipc
-            print(f"Baseline IPC ({scheduler_name}): {baseline_ipc}")
-            
-            # Step 3: Run yoked_simulator
+            mem_output = run_command(mem_sched_cmd, f"Memory scheduler ({scheduler_name})")
+            if mem_output is None:
+                print(f"Failed to run memory scheduler for {scheduler_name}")
+                results.append(result_row)
+                continue
+        else:
+            if not output_binary.exists():
+                print(f"Warning: Expected pre-compiled file not found: {output_binary}")
+                results.append(result_row)
+                continue
+            print(f"Using pre-compiled binary: {output_binary}")
+        
+        # Run baseline once
+        baseline_cmd = [
+            "./yoked_simulator",
+            str(output_binary),
+            str(CYCLE_LIMIT),
+            "-a", str(CAPACITY),
+            "-f", str(factory_size),
+            "--baseline", "1"
+        ]
+        
+        baseline_output = run_command(baseline_cmd, f"Yoked simulator baseline")
+        baseline_ipc = extract_ipc(baseline_output)
+        result_row['baseline_ipc'] = baseline_ipc
+        print(f"Baseline IPC: {baseline_ipc}")
+        
+        # Run non-baseline with each intermediate storage size
+        for i_size in INTERMEDIATE_STORAGE_SIZES:
             yoked_cmd = [
                 "./yoked_simulator",
                 str(output_binary),
                 str(CYCLE_LIMIT),
                 "-a", str(CAPACITY),
-                "-f", str(factory_size)
+                "-f", str(factory_size),
+                "-i", str(i_size)
             ]
             
-            yoked_output = run_command(yoked_cmd, f"Yoked simulator ({scheduler_name})")
+            yoked_output = run_command(yoked_cmd, f"Yoked simulator (intermediate={i_size})")
             yoked_ipc = extract_ipc(yoked_output)
-            result_row[f'{scheduler_name}_yoked_ipc'] = yoked_ipc
-            print(f"Yoked IPC ({scheduler_name}): {yoked_ipc}")
+            result_row[f'yoked_i{i_size}_ipc'] = yoked_ipc
+            print(f"Yoked IPC (intermediate={i_size}): {yoked_ipc}")
         
         results.append(result_row)
     
@@ -171,9 +170,8 @@ def main():
     if results:
         fieldnames = [
             'benchmark', 'input_file', 'num_qubits', 'capacity',
-            'eif_baseline_ipc', 'eif_yoked_ipc',
-            'hint_baseline_ipc', 'hint_yoked_ipc'
-        ]
+            'baseline_ipc',
+        ] + [f'yoked_i{s}_ipc' for s in INTERMEDIATE_STORAGE_SIZES]
         
         with open(csv_file, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -183,16 +181,15 @@ def main():
         print(f"Results saved to {csv_file}")
         
         # Print summary table
+        i_cols = ''.join(f"{'i='+str(s):<14}" for s in INTERMEDIATE_STORAGE_SIZES)
         print("\nSummary:")
-        print("-" * 120)
-        print(f"{'Benchmark':<20} {'EIF Baseline':<14} {'EIF Yoked IPC':<14} {'HINT Baseline':<14} {'HINT Yoked IPC':<14}")
-        print("-" * 120)
+        print("-" * (48 + 14 * (1 + len(INTERMEDIATE_STORAGE_SIZES))))
+        print(f"{'Benchmark':<20} {'Baseline':<14} {i_cols}")
+        print("-" * (48 + 14 * (1 + len(INTERMEDIATE_STORAGE_SIZES))))
         for row in results:
-            print(f"{row['benchmark']:<20} {row.get('eif_baseline_ipc', 'N/A')!s:<14} "
-                  f"{row.get('eif_yoked_ipc', 'N/A')!s:<14} "
-                  f"{row.get('hint_baseline_ipc', 'N/A')!s:<14} "
-                  f"{row.get('hint_yoked_ipc', 'N/A')!s:<14}")
-        print("-" * 120)
+            i_vals = ''.join(f"{row.get(f'yoked_i{s}_ipc', 'N/A')!s:<14}" for s in INTERMEDIATE_STORAGE_SIZES)
+            print(f"{row['benchmark']:<20} {row.get('baseline_ipc', 'N/A')!s:<14} {i_vals}")
+        print("-" * (48 + 14 * (1 + len(INTERMEDIATE_STORAGE_SIZES))))
     else:
         print("No results to write!")
 

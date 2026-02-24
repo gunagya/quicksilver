@@ -12,17 +12,22 @@
 #include "sim/factory.h"
 #include "sim/memory_subsystem.h"
 #include "sim/storage.h"
+#include "sim/yoked_codes/yoked_1d_storage.h"
 #include "sim/yoked_codes/yoked_cold_storage.h"
 #include "globals.h"
 
 #include <map>
 #include <vector>
+#include <queue>
 #include <unordered_set>
 
 namespace sim
 {
 namespace yoked_codes
 {
+
+constexpr int dag_sample_rate = 20;
+constexpr int dag_lookahead = 50;
 
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
@@ -50,9 +55,6 @@ class YOKED_ARCHITECTURE: public COMPUTE_BASE
 
     long fetch_and_execute_instructions_from_client(CLIENT*);
 
-    // Override to track qubits loaded from yoked cold storage
-    execute_result_type do_memory_access(inst_ptr, QUBIT* ld, QUBIT* st) override;
-
   private:
     // Track which qubits can be used for non-Clifford operations
     // - Qubits in local memory at start: true (already verified)
@@ -60,11 +62,7 @@ class YOKED_ARCHITECTURE: public COMPUTE_BASE
     // - After yoke cycle completes: true (verified and ready)
     std::map<QUBIT*, bool> can_operate_non_clifford_; 
 
-    // Handler for when yoke cycle completes in cold storage
-    void handle_yoke_complete(const std::unordered_set<QUBIT*>& ready_qubits);
-    
-    // Set up callbacks for all yoked cold storage devices in memory hierarchy
-    void setup_yoke_callbacks();
+    YOKED_1D_STORAGE* yoked_1d_storage_ = nullptr;
 
     void retire_instruction(CLIENT* c, inst_ptr inst, cycle_type inst_latency);
 };
