@@ -5,6 +5,7 @@
 
 #include "sim/yoked_codes/yoked_1d_storage.h"
 
+#include "globals.h"
 #include "sim/client.h"
 #include "sim/configuration/resource_estimation.h"
 #include "sim/memory_subsystem.h"
@@ -60,6 +61,20 @@ void YOKED_1D_STORAGE::set_memory_subsystem(MEMORY_SUBSYSTEM* mem_subsystem) {
 
 long YOKED_1D_STORAGE::operate() {
     r_ += effective_code_distance_;
+    
+    // Track percentage of needed qubits in 1D storage every cycle
+    if (!contents().empty()) {
+        size_t needed_count = 0;
+        for (auto* q : contents()) {
+            if (need_qubits_.count(q) > 0 && need_qubits_[q]) {
+                needed_count++;
+            }
+        }
+        double needed_percentage = 100.0 * needed_count / contents().size();
+        s_total_needed_percentage += needed_percentage;
+        s_cycle_samples++;
+    }
+    
     switch (current_phase_) {
         case CHECK_YOKE:
             phase_progress_ += effective_code_distance_;
@@ -87,6 +102,26 @@ long YOKED_1D_STORAGE::operate() {
             break;
     }
     return 1;
+}
+
+YOKED_1D_STORAGE::access_result_type 
+YOKED_1D_STORAGE::do_memory_access(QUBIT* ld, QUBIT* st) {
+    // Call base class implementation
+    auto result = STORAGE::do_memory_access(ld, st);
+    
+    if (result.success) {
+        // Track residence time for qubit going to compute region
+        if (qubit_entry_cycle_.count(ld) > 0) {
+            s_residence_time_to_compute += current_cycle() - qubit_entry_cycle_[ld];
+            s_qubits_to_compute++;
+            qubit_entry_cycle_.erase(ld);
+        }
+        
+        // Track entry time for qubit being stored in 1D
+        qubit_entry_cycle_[st] = current_cycle();
+    }
+    
+    return result;
 }
 
 void YOKED_1D_STORAGE::schedule_memory_operations() {
@@ -121,6 +156,17 @@ void YOKED_1D_STORAGE::schedule_memory_operations() {
     result = STORAGE::do_memory_access(st, ld);
     assert(result.success);
 
+    // Track residence time statistics
+    // ld is entering 1D storage from 2D
+    qubit_entry_cycle_[ld] = current_cycle();
+    
+    // st is exiting 1D storage to 2D
+    if (qubit_entry_cycle_.count(st) > 0) {
+        s_residence_time_to_2d += current_cycle() - qubit_entry_cycle_[st];
+        s_qubits_to_2d++;
+        qubit_entry_cycle_.erase(st);
+    }
+
     remove_qubits_.pop_back();
     need_qubits_.erase(ld);
 }
@@ -144,6 +190,32 @@ void YOKED_1D_STORAGE::error_stats() {
     std::cout << "Total yoke cycles completed: " << ro_ << "\n";
     std::cout << "RMS r per yoke cycle: " << pow(sum_rpow2_ / ro_, 0.5) << "\n";
     std::cout << "Ideal yoke cycle rounds: " << yoke_cycle_rounds_ << "\n";
+    
+    std::cout << "\nResidence Time Statistics:\n";
+    if (s_qubits_to_compute > 0) {
+        double avg_residence_to_compute = static_cast<double>(s_residence_time_to_compute) / s_qubits_to_compute;
+        print_stat_line(std::cout, "Avg residence time (1D -> Compute) [cycles]", avg_residence_to_compute);
+        print_stat_line(std::cout, "Total qubits: 1D -> Compute", s_qubits_to_compute);
+    } else {
+        print_stat_line(std::cout, "Avg residence time (1D -> Compute) [cycles]", 0.0);
+    }
+    
+    if (s_qubits_to_2d > 0) {
+        double avg_residence_to_2d = static_cast<double>(s_residence_time_to_2d) / s_qubits_to_2d;
+        print_stat_line(std::cout, "Avg residence time (1D -> 2D) [cycles]", avg_residence_to_2d);
+        print_stat_line(std::cout, "Total qubits: 1D -> 2D", s_qubits_to_2d);
+    } else {
+        print_stat_line(std::cout, "Avg residence time (1D -> 2D) [cycles]", 0.0);
+    }
+    
+    std::cout << "\n1D Storage Utilization:\n";
+    if (s_cycle_samples > 0) {
+        double avg_needed_percentage = s_total_needed_percentage / s_cycle_samples;
+        print_stat_line(std::cout, "Avg % of needed qubits in 1D storage", avg_needed_percentage);
+        print_stat_line(std::cout, "Cycles sampled", s_cycle_samples);
+    } else {
+        print_stat_line(std::cout, "Avg % of needed qubits in 1D storage", 0.0);
+    }
 }
 
 } // namespace sim

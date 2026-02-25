@@ -64,8 +64,15 @@ YOKED_ARCHITECTURE::operate()
     // Mark newly verified qubits from cold storage as ready for non-Clifford operations.
     for (auto* storage : memory_hierarchy_->storages())
         if (auto* yoked_cold_storage = dynamic_cast<YOKED_COLD_STORAGE*>(storage)) {
-            for (QUBIT* q : yoked_cold_storage->drain_newly_verified_qubits())
+            for (QUBIT* q : yoked_cold_storage->drain_newly_verified_qubits()) {
                 can_operate_non_clifford_[q] = true;
+                // Track delay for qubits loaded from 1D that are now ready
+                if (qubit_1d_load_cycle_.count(q) > 0) {
+                    s_total_1d_to_ready_delay += current_cycle() - qubit_1d_load_cycle_[q];
+                    s_1d_loads_with_delay++;
+                    qubit_1d_load_cycle_.erase(q);
+                }
+            }
             for (QUBIT* q : yoked_cold_storage->drain_newly_stored_qubits())
                 can_operate_non_clifford_[q] = false;
         }
@@ -157,6 +164,49 @@ YOKED_ARCHITECTURE::fetch_and_execute_instructions_from_client(CLIENT* c)
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
 
+YOKED_ARCHITECTURE::execute_result_type
+YOKED_ARCHITECTURE::do_memory_access(inst_ptr inst, QUBIT* ld, QUBIT* st)
+{
+    // Determine which storage contains the qubit being loaded
+    auto storage_it = memory_hierarchy_->lookup(ld);
+    bool is_1d_load = false;
+    bool is_2d_load = false;
+    
+    if (storage_it != memory_hierarchy_->storages().end()) {
+        if (dynamic_cast<YOKED_1D_STORAGE*>(*storage_it)) {
+            is_1d_load = true;
+        } else if (dynamic_cast<YOKED_COLD_STORAGE*>(*storage_it)) {
+            is_2d_load = true;
+        }
+    }
+    
+    // Call base class implementation
+    auto result = COMPUTE_BASE::do_memory_access(inst, ld, st);
+    
+    if (result.progress) {
+        // Track statistics
+        if (is_1d_load) {
+            s_1d_loads++;
+            // Check if qubit is already ready for non-Cliffords
+            if (can_operate_non_clifford_[ld]) {
+                // Already ready - delay is 0
+                s_total_1d_to_ready_delay += 0;
+                s_1d_loads_with_delay++;
+            } else {
+                // Not ready yet - record the cycle when loaded from 1D storage
+                qubit_1d_load_cycle_[ld] = current_cycle();
+            }
+        } else if (is_2d_load) {
+            s_2d_loads++;
+        }
+    }
+    
+    return result;
+}
+
+////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////
+
 void
 YOKED_ARCHITECTURE::retire_instruction(CLIENT* c, inst_ptr inst, cycle_type inst_latency)
 {
@@ -213,6 +263,44 @@ YOKED_ARCHITECTURE::print_deadlock_info(std::ostream& ostrm, std::vector<CLIENT:
                         });
             std::cout << "\n";
         }
+    }
+}
+
+////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////
+
+void
+YOKED_ARCHITECTURE::print_yoked_storage_stats()
+{
+    std::cout << "\nYoked Storage Statistics:\n";
+    std::cout << "=========================\n";
+    
+    uint64_t total_loads = s_1d_loads + s_2d_loads;
+    if (total_loads > 0) {
+        double miss_rate = 100.0 * s_2d_loads / total_loads;
+        print_stat_line(std::cout, "Total memory loads", total_loads);
+        print_stat_line(std::cout, "Loads from 1D storage", s_1d_loads);
+        print_stat_line(std::cout, "Loads from 2D storage (misses)", s_2d_loads);
+        print_stat_line(std::cout, "Miss rate (%)", miss_rate);
+    } else {
+        print_stat_line(std::cout, "Total memory loads", 0);
+    }
+    
+    if (s_1d_loads_with_delay > 0) {
+        double avg_delay = static_cast<double>(s_total_1d_to_ready_delay) / s_1d_loads_with_delay;
+        print_stat_line(std::cout, "Avg delay: 1D load to non-Clifford ready (cycles)", avg_delay);
+        print_stat_line(std::cout, "Total 1D loads tracked for delay", s_1d_loads_with_delay);
+    } else {
+        print_stat_line(std::cout, "Avg delay: 1D load to non-Clifford ready (cycles)", 0.0);
+    }
+    
+    // Print error stats for all yoked storages
+    std::cout << "\n";
+    for (auto* storage : memory_hierarchy_->storages()) {
+        if (auto* yoked_cold_storage = dynamic_cast<YOKED_COLD_STORAGE*>(storage))
+            yoked_cold_storage->error_stats();
+        else if (auto* yoked_1d_storage = dynamic_cast<YOKED_1D_STORAGE*>(storage))
+            yoked_1d_storage->error_stats();
     }
 }
 

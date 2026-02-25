@@ -46,11 +46,24 @@ class YOKED_1D_STORAGE : public sim::STORAGE
 
     std::map<QUBIT*, bool> need_qubits_; 
     std::vector<QUBIT*> remove_qubits_;
+
+    // Statistics for tracking residence time (split by destination)
+    std::map<QUBIT*, cycle_type> qubit_entry_cycle_;  // Track when qubits enter 1D storage
+    uint64_t s_residence_time_to_compute{0};  // Cycles for qubits loaded to compute region
+    uint64_t s_qubits_to_compute{0};  // Count of qubits loaded to compute region
+    uint64_t s_residence_time_to_2d{0};  // Cycles for qubits evicted to 2D storage
+    uint64_t s_qubits_to_2d{0};  // Count of qubits evicted to 2D storage
+    
+    // Statistics for tracking needed vs unneeded qubits in 1D storage
+    double s_total_needed_percentage{0};  // Cumulative percentage of needed qubits
+    uint64_t s_cycle_samples{0};  // Number of cycles sampled
   
     enum PHASE {
         CHECK_YOKE,
         MEMORY_OPS,
     } current_phase_{CHECK_YOKE};
+    
+    virtual access_result_type do_memory_access(QUBIT* ld, QUBIT* st) override;
     size_t phase_progress_{0};
 
     size_t r_{0}, ro_{0};

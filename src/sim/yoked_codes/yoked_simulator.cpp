@@ -248,13 +248,8 @@ main(int argc, char* argv[])
     sim::print_stats_for_factories(std::cout, "L1_FACTORY", alloc.first_level);
     sim::print_stats_for_factories(std::cout, "L2_FACTORY", alloc.second_level);
 
-    // Print error stats for yoked cold storages
-    for (auto* s : memory_subsystem->storages()) {
-        if (auto* yoke_storage = dynamic_cast<sim::YOKED_COLD_STORAGE*>(s))
-            yoke_storage->error_stats();
-        else if (auto* yoke_storage = dynamic_cast<sim::YOKED_1D_STORAGE*>(s))
-            yoke_storage->error_stats();
-    }
+    // Print yoked architecture storage statistics (includes error stats for all storages)
+    yoked_arch->print_yoked_storage_stats();
 
     print_stat_line(std::cout, "COMPUTE_PHYSICAL_QUBITS", compute_physical_qubits);
     print_stat_line(std::cout, "MEMORY_PHYSICAL_QUBITS", memory_physical_qubits);

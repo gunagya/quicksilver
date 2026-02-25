@@ -45,7 +45,7 @@ YOKED_COLD_STORAGE::YOKED_COLD_STORAGE(double freq_khz, size_t logical_qubit_cou
              3),                                                         // store_latency
         grid_length_(grid_length(logical_qubit_count)),
         inner_code_distance_(inner_code_distance), effective_code_distance_(effective_code_distance),
-        yoke_cycle_rounds_((25 * grid_length_) * inner_code_distance + effective_code_distance * 2) {
+        yoke_cycle_rounds_((25 * grid_length_ + 4) * inner_code_distance) {
     cycle_available_[0] = 1;
 }
 
