@@ -9,6 +9,7 @@
 #include "sim/client.h"
 #include "sim/configuration/resource_estimation.h"
 #include "sim/memory_subsystem.h"
+#include <cmath>
 
 namespace sim {
 
@@ -20,7 +21,7 @@ size_t row_length(size_t rows, size_t logical_qubit_count) {
     if (row_length % 2 != 0) {
         row_length++;
     }
-    return row_length;
+    return row_length + 2;
 }
 
 size_t calculate_physical_qubit_count(size_t rows, size_t row_length, size_t inner_code_distance, size_t effective_code_distance) {
@@ -66,7 +67,7 @@ long YOKED_1D_STORAGE::operate() {
     if (!contents().empty()) {
         size_t needed_count = 0;
         for (auto* q : contents()) {
-            if (need_qubits_.count(q) > 0 && need_qubits_[q]) {
+            if (need_qubits_.count(q) > 0) {
                 needed_count++;
             }
         }
@@ -128,17 +129,24 @@ void YOKED_1D_STORAGE::schedule_memory_operations() {
     if (!has_free_adapter() || remove_qubits_.empty() || need_qubits_.empty())
         return;
 
-    // 1. Find the first qubit in need_qubits that is in the memory system and not already in 1d storage.
+    // 1. Find the qubit with lowest order (earliest layer/depth) that is in memory system and not in 1d storage.
     QUBIT* ld = nullptr;
+    size_t min_order = std::numeric_limits<size_t>::max();
+    
     auto it = need_qubits_.begin();
     while (it != need_qubits_.end()) {
         QUBIT* candidate = it->first;
+        size_t order = it->second;
+        
         if (contains(candidate) || memory_subsystem_->retrieve_qubit(candidate->client_id, candidate->qubit_id) == nullptr) {
             // Already in 1d storage or not in memory system -- skip.
             it = need_qubits_.erase(it);
         } else {
-            ld = candidate;
-            break;
+            if (order < min_order) {
+                min_order = order;
+                ld = candidate;
+            }
+            ++it;
         }
     }
     if (ld == nullptr)
@@ -171,25 +179,36 @@ void YOKED_1D_STORAGE::schedule_memory_operations() {
     need_qubits_.erase(ld);
 }
 
-void YOKED_1D_STORAGE::feed_memory_instructions(std::vector<INSTRUCTION*> mem_insts, 
+void YOKED_1D_STORAGE::feed_memory_instructions(std::vector<std::pair<size_t, INSTRUCTION*>> mem_insts, 
     const std::vector<QUBIT*>& client_qubits) {
     need_qubits_.clear();
     remove_qubits_.clear();
-    for (auto* inst : mem_insts) {
-        need_qubits_[client_qubits[inst->q_begin()[0]]] = true;
+    for (const auto& [order, inst] : mem_insts) {
+        QUBIT* q = client_qubits[inst->q_begin()[0]];
+        // Keep the minimum order if qubit appears multiple times
+        if (need_qubits_.count(q) == 0) {
+            need_qubits_[q] = order;
+        } else {
+            need_qubits_[q] = std::min(need_qubits_[q], order);
+        }
     }
     for (auto qubit: contents()) {
-        if (!need_qubits_[qubit]) {
+        if (need_qubits_.count(qubit) == 0) {
             remove_qubits_.push_back(qubit);
         }
     }
+    
+    // Track statistics
+    s_total_needed_qubits += need_qubits_.size();
+    s_feed_call_count++;
 }
 
 void YOKED_1D_STORAGE::error_stats() {
     std::cout << "YOKED_1D_STORAGE Error Stats:\n";
-    std::cout << "Total yoke cycles completed: " << ro_ << "\n";
-    std::cout << "RMS r per yoke cycle: " << pow(sum_rpow2_ / ro_, 0.5) << "\n";
-    std::cout << "Ideal yoke cycle rounds: " << yoke_cycle_rounds_ << "\n";
+    std::cout << "RMS r per yoke cycle: " << std::pow(sum_rpow2_ / ro_, 0.5) << " vs an ideal " << yoke_cycle_rounds_ << "\n";
+    std::cout << "Per logical-qubit round error rate: " << std::scientific << (sum_rpow2_ * pow(row_length_, 2) 
+    * std::pow(15.0, -static_cast<double>(inner_code_distance_)) / 100.0) 
+    / (current_cycle() * effective_code_distance_ * (row_length_-2))<<'\n';
     
     std::cout << "\nResidence Time Statistics:\n";
     if (s_qubits_to_compute > 0) {
@@ -215,6 +234,14 @@ void YOKED_1D_STORAGE::error_stats() {
         print_stat_line(std::cout, "Cycles sampled", s_cycle_samples);
     } else {
         print_stat_line(std::cout, "Avg % of needed qubits in 1D storage", 0.0);
+    }
+    
+    if (s_feed_call_count > 0) {
+        double avg_needed_qubits = static_cast<double>(s_total_needed_qubits) / s_feed_call_count;
+        print_stat_line(std::cout, "Avg needed qubits per feed call", avg_needed_qubits);
+        print_stat_line(std::cout, "Total feed_memory_instructions calls", s_feed_call_count);
+    } else {
+        print_stat_line(std::cout, "Avg needed qubits per feed call", 0.0);
     }
 }
 

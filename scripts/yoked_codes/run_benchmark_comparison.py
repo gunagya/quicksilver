@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Benchmark comparison script for yoked architecture with varying intermediate storage sizes.
-Runs yoked_simulator with baseline once, then non-baseline with intermediate storage sizes 0, 8, 16, 24.
+Benchmark comparison script for yoked architecture.
+Runs yoked_simulator with baseline and with optimal memory configuration.
 """
 
 import subprocess
@@ -12,22 +12,16 @@ from pathlib import Path
 
 # Configuration
 BUILD_DIR = Path("/Users/gunagya/Desktop/Research Work/routing-space-sliding/simulators/routing-simulator/deps/quicksilver/build")
-BENCHMARK_DIR = Path("/Users/gunagya/Desktop/Research Work/routing-space-sliding/benchmarks")
-MEM_COMPILED_OUTPUT_DIR = Path("/Users/gunagya/Desktop/Research Work/routing-space-sliding/simulators/routing-simulator/deps/quicksilver/benchmarks/bin")
+BENCHMARK_DIR = Path("/Users/gunagya/Desktop/Research Work/routing-space-sliding/simulators/routing-simulator/deps/quicksilver/benchmarks/bin")
+MEM_COMPILED_OUTPUT_DIR = Path("/Users/gunagya/Desktop/Research Work/routing-space-sliding/simulators/routing-simulator/deps/quicksilver/benchmarks/bin/mem")
 CAPACITY = 4
 CYCLE_LIMIT = 1_000_000  # 1M cycles for simulation
 COMPILE_MEMORY = False  # Set to False if input files already have memory instructions compiled
-INTERMEDIATE_STORAGE_SIZES = [0, 8, 16, 24]
 
 # List of benchmarks to process
 # Format: (input_file, num_qubits, factory_size, description)
 BENCHMARKS = [
-    ("compressed/BQ_v_c2h4o_ethylene_oxide_240_d100_t1M_T15M.xz", 241, 100000, "ethylene_oxide"),
-    ("compressed/BQ_v_hc3h2cn_288_d100_t1M_T63M.xz", 289, 100000, "hc3h2cn"),
-    ("compressed/BQ_e_cr2_120_d100_t1M_T5M.xz", 121, 200000, "cr2"),
-    ("binary/e_h60_121_td_1000by40.bin", 121, 250000, "e_h60"),
-    ("compressed/BQ_shor_rsa256_iter_4.xz", 514, 2000000, "shor_rsa256"),
-    ("binary/sat_grover_schoning_n784_new.bin", 784, 200000, "sat_grover_schoning"),
+    ("shor_modmult_N16777259_a3_pow0.bin", 111, 100000, "shor_rsa24"),
 ]
 
 def run_command(cmd, description):
@@ -63,6 +57,18 @@ def extract_ipc(output):
     match = re.search(r'([0-9.]+)\s+instructions per cycle', output, re.IGNORECASE)
     if match:
         return float(match.group(1))
+    
+    return None
+
+def extract_memory_physical_qubits(output):
+    """Extract memory physical qubits from simulator output."""
+    if output is None:
+        return None
+    
+    # Look for MEMORY_PHYSICAL_QUBITS in output
+    match = re.search(r'MEMORY_PHYSICAL_QUBITS[:\s]+([0-9]+)', output, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
     
     return None
 
@@ -140,24 +146,44 @@ def main():
         
         baseline_output = run_command(baseline_cmd, f"Yoked simulator baseline")
         baseline_ipc = extract_ipc(baseline_output)
+        baseline_mem_qubits = extract_memory_physical_qubits(baseline_output)
         result_row['baseline_ipc'] = baseline_ipc
-        print(f"Baseline IPC: {baseline_ipc}")
+        result_row['baseline_mem_qubits'] = baseline_mem_qubits
+        print(f"Baseline IPC: {baseline_ipc}, Memory Qubits: {baseline_mem_qubits}")
         
-        # Run non-baseline with each intermediate storage size
-        for i_size in INTERMEDIATE_STORAGE_SIZES:
-            yoked_cmd = [
-                "./yoked_simulator",
-                str(output_binary),
-                str(CYCLE_LIMIT),
-                "-a", str(CAPACITY),
-                "-f", str(factory_size),
-                "-i", str(i_size)
-            ]
-            
-            yoked_output = run_command(yoked_cmd, f"Yoked simulator (intermediate={i_size})")
-            yoked_ipc = extract_ipc(yoked_output)
-            result_row[f'yoked_i{i_size}_ipc'] = yoked_ipc
-            print(f"Yoked IPC (intermediate={i_size}): {yoked_ipc}")
+        # Run with optimal memory configuration
+        optimal_cmd = [
+            "./yoked_simulator",
+            str(output_binary),
+            str(CYCLE_LIMIT),
+            "-a", str(CAPACITY),
+            "-f", str(factory_size),
+            "--use-optimal-memory-config"
+        ]
+        
+        optimal_output = run_command(optimal_cmd, f"Yoked simulator (optimal memory config)")
+        optimal_ipc = extract_ipc(optimal_output)
+        optimal_mem_qubits = extract_memory_physical_qubits(optimal_output)
+        result_row['optimal_ipc'] = optimal_ipc
+        result_row['optimal_mem_qubits'] = optimal_mem_qubits
+        print(f"Optimal IPC: {optimal_ipc}, Memory Qubits: {optimal_mem_qubits}")
+        
+        # Run with only 2D blocks (no 1D intermediate storage)
+        only_2d_cmd = [
+            "./yoked_simulator",
+            str(output_binary),
+            str(CYCLE_LIMIT),
+            "-a", str(CAPACITY),
+            "-f", str(factory_size),
+            "--only-2d"
+        ]
+        
+        only_2d_output = run_command(only_2d_cmd, f"Yoked simulator (only 2D blocks)")
+        only_2d_ipc = extract_ipc(only_2d_output)
+        only_2d_mem_qubits = extract_memory_physical_qubits(only_2d_output)
+        result_row['only_2d_ipc'] = only_2d_ipc
+        result_row['only_2d_mem_qubits'] = only_2d_mem_qubits
+        print(f"Only 2D IPC: {only_2d_ipc}, Memory Qubits: {only_2d_mem_qubits}")
         
         results.append(result_row)
     
@@ -170,8 +196,10 @@ def main():
     if results:
         fieldnames = [
             'benchmark', 'input_file', 'num_qubits', 'capacity',
-            'baseline_ipc',
-        ] + [f'yoked_i{s}_ipc' for s in INTERMEDIATE_STORAGE_SIZES]
+            'baseline_ipc', 'baseline_mem_qubits',
+            'optimal_ipc', 'optimal_mem_qubits',
+            'only_2d_ipc', 'only_2d_mem_qubits'
+        ]
         
         with open(csv_file, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -181,15 +209,18 @@ def main():
         print(f"Results saved to {csv_file}")
         
         # Print summary table
-        i_cols = ''.join(f"{'i='+str(s):<14}" for s in INTERMEDIATE_STORAGE_SIZES)
         print("\nSummary:")
-        print("-" * (48 + 14 * (1 + len(INTERMEDIATE_STORAGE_SIZES))))
-        print(f"{'Benchmark':<20} {'Baseline':<14} {i_cols}")
-        print("-" * (48 + 14 * (1 + len(INTERMEDIATE_STORAGE_SIZES))))
+        print("-" * 130)
+        print(f"{'Benchmark':<20} {'Baseline IPC':<15} {'Baseline Mem':<15} {'Optimal IPC':<15} {'Optimal Mem':<15} {'Only2D IPC':<15} {'Only2D Mem':<15}")
+        print("-" * 130)
         for row in results:
-            i_vals = ''.join(f"{row.get(f'yoked_i{s}_ipc', 'N/A')!s:<14}" for s in INTERMEDIATE_STORAGE_SIZES)
-            print(f"{row['benchmark']:<20} {row.get('baseline_ipc', 'N/A')!s:<14} {i_vals}")
-        print("-" * (48 + 14 * (1 + len(INTERMEDIATE_STORAGE_SIZES))))
+            print(f"{row['benchmark']:<20} {row.get('baseline_ipc', 'N/A')!s:<15} "
+                  f"{row.get('baseline_mem_qubits', 'N/A')!s:<15} "
+                  f"{row.get('optimal_ipc', 'N/A')!s:<15} "
+                  f"{row.get('optimal_mem_qubits', 'N/A')!s:<15} "
+                  f"{row.get('only_2d_ipc', 'N/A')!s:<15} "
+                  f"{row.get('only_2d_mem_qubits', 'N/A')!s:<15}")
+        print("-" * 130)
     else:
         print("No results to write!")
 

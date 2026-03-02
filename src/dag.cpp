@@ -10,6 +10,30 @@
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
 
+namespace {
+
+inline size_t
+get_inst_depth_score(INSTRUCTION::TYPE t)
+{
+    if (is_rotation_instruction(t))
+        return 20;
+    else if (is_toffoli_like_instruction(t))
+        return 10;
+    else if (is_cx_like_instruction(t))
+        return 2;
+    else if (is_software_instruction(t))
+        return 0;
+    else if (is_memory_access(t))
+        return 5;
+    else
+        return 1;
+}
+
+}  // namespace
+
+////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////
+
 DAG::DAG(size_t _qubit_count)
     :qubit_count(_qubit_count),
     front_layer_(),
@@ -130,31 +154,96 @@ DAG::inst_count() const
     return inst_count_;
 }
 
-std::vector<DAG::inst_ptr>
+std::vector<std::pair<size_t, DAG::inst_ptr>>
 DAG::get_memory_instructions_upto_layers(size_t num_layers) const
 {
-    std::vector<inst_ptr> mem_insts;
-    for_each_instruction_in_layer_order(
-        [&mem_insts] (const inst_ptr inst)
+    std::vector<std::pair<size_t, inst_ptr>> mem_insts;
+    size_t current_layer = 0;
+    
+    // Modified version of for_each_instruction_in_layer_order that tracks layer numbers
+    iteration_generation_++;
+    const size_t gen = iteration_generation_;
+
+    std::vector<node_type*> current_layer_nodes;
+    current_layer_nodes.reserve(front_layer_.size());
+    for (const auto& [_, node] : front_layer_)
+        current_layer_nodes.push_back(node);
+
+    while (!current_layer_nodes.empty() && current_layer < num_layers)
+    {
+        std::vector<node_type*> next_layer;
+        next_layer.reserve(current_layer_nodes.size());
+
+        for (auto* x : current_layer_nodes)
         {
-            if (is_memory_access(inst->type))
-                mem_insts.push_back(inst);
-        },
-        0, num_layers);
+            if (is_memory_access(x->inst->type))
+                mem_insts.push_back({current_layer, x->inst});
+
+            for (node_type* y : x->dependent)
+            {
+                if (y->last_generation_ != gen)
+                {
+                    y->last_generation_ = gen;
+                    y->tmp_pred_count_ = 0;
+                }
+                if ((++y->tmp_pred_count_) == y->pred_count)
+                    next_layer.push_back(y);
+            }
+        }
+        current_layer_nodes = std::move(next_layer);
+        current_layer++;
+    }
     return mem_insts;
 }
 
-std::vector<DAG::inst_ptr>
+std::vector<std::pair<size_t, DAG::inst_ptr>>
 DAG::get_memory_instructions_upto_depth(size_t depth) const
 {
-    std::vector<inst_ptr> mem_insts;
-    for_each_instruction_upto_circuit_depth(
-        [&mem_insts] (const inst_ptr inst)
+    std::vector<std::pair<size_t, inst_ptr>> mem_insts;
+    
+    // Modified version of for_each_instruction_upto_circuit_depth that tracks depth
+    iteration_generation_++;
+    const size_t gen = iteration_generation_;
+
+    std::vector<node_type*> current_layer;
+    current_layer.reserve(front_layer_.size());
+    for (const auto& [_, node] : front_layer_)
+    {
+        node->last_generation_ = gen;
+        node->tmp_pred_count_ = 0;
+        node->tmp_depth_ = 0;
+        current_layer.push_back(node);
+    }
+
+    while (!current_layer.empty())
+    {
+        std::vector<node_type*> next_layer;
+        next_layer.reserve(current_layer.size());
+
+        for (auto* x : current_layer)
         {
-            if (is_memory_access(inst->type))
-                mem_insts.push_back(inst);
-        },
-        depth);
+            if (x->tmp_depth_ <= depth)
+            {
+                if (is_memory_access(x->inst->type))
+                    mem_insts.push_back({x->tmp_depth_, x->inst});
+
+                size_t next_depth = x->tmp_depth_ + get_inst_depth_score(x->inst->type);
+                for (node_type* y : x->dependent)
+                {
+                    if (y->last_generation_ != gen)
+                    {
+                        y->last_generation_ = gen;
+                        y->tmp_pred_count_ = 0;
+                        y->tmp_depth_ = 0;
+                    }
+                    y->tmp_depth_ = std::max(y->tmp_depth_, next_depth);
+                    if ((++y->tmp_pred_count_) == y->pred_count)
+                        next_layer.push_back(y);
+                }
+            }
+        }
+        current_layer = std::move(next_layer);
+    }
     return mem_insts;
 }
 

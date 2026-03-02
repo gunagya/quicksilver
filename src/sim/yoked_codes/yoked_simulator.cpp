@@ -10,6 +10,7 @@
 #include "sim/yoked_codes/yoked_1d_storage.h"
 #include "sim/yoked_codes/yoked_architecture.h"
 #include "sim/yoked_codes/yoked_cold_storage.h"
+#include "sim/yoked_codes/memory_optimizer.h"
 #include "sim/memory_subsystem.h"
 #include "sim/factory.h"
 
@@ -28,6 +29,7 @@ namespace
 
 constexpr size_t COMPUTE_CODE_DISTANCE{25};
 constexpr size_t MEMORY_CODE_DISTANCE{25};
+constexpr double TARGET_MEMORY_ERROR_RATE{1e-15};
 
 constexpr uint64_t compute_syndrome_extraction_round_time_ns = 1200;
 constexpr uint64_t memory_syndrome_extraction_round_time_ns = 1200;
@@ -57,6 +59,8 @@ main(int argc, char* argv[])
     int64_t print_progress;
     bool    jit;
     int64_t    baseline;
+    bool    use_optimal_memory_config;
+    bool    only_2d;
 
     int64_t compute_local_memory_capacity;
     int64_t intermediate_storage_capacity;
@@ -70,6 +74,8 @@ main(int argc, char* argv[])
         .optional("-pp", "--print-progress", "Progress print frequency (in compute cycles)", print_progress, 0)
         .optional("-jit", "", "Just-in-time compilation for an input source file", jit, false)
         .optional("", "--baseline", "Use baseline STORAGE instead of YOKED_COLD_STORAGE for memory blocks", baseline, 0)
+        .optional("", "--use-optimal-memory-config", "Use optimal memory configuration (ignores -i flag)", use_optimal_memory_config, false)
+        .optional("", "--only-2d", "Use optimal memory configuration with only 2D blocks (no 1D blocks)", only_2d, false)
 
         .optional("-a", "--compute-local-memory-capacity", "Number of active qubits in the compute subsystem's local memory", 
                       compute_local_memory_capacity, 12)
@@ -144,8 +150,103 @@ main(int argc, char* argv[])
                                             1 // store latency
                                             );
         }
+    } else if (use_optimal_memory_config || only_2d) {
+        // Yoked: use optimal memory configuration
+        std::cout << "\n=== Computing Optimal Memory Configuration ===\n";
+        std::cout << "Target logical qubits: " << main_memory_qubits << "\n";
+        std::cout << "Target error rate: " << TARGET_MEMORY_ERROR_RATE << "\n";
+        std::cout << "Effective code distance: " << MEMORY_CODE_DISTANCE << "\n";
+        if (only_2d) {
+            std::cout << "Mode: Only 2D blocks (no 1D blocks)\n";
+        } else {
+            std::cout << "Mode: With 1D block requirement\n";
+        }
+        std::cout << "\n";
+        
+        auto optimal_config = sim::yoked_codes::optimize_memory_config(
+            main_memory_qubits,
+            TARGET_MEMORY_ERROR_RATE,
+            MEMORY_CODE_DISTANCE,
+            !only_2d,  // require_1d_block (false when only_2d is true)
+            only_2d,   // only_2d
+            false      // verbose
+        );
+        
+        if (optimal_config.physical_qubits == std::numeric_limits<size_t>::max()) {
+            std::cerr << "ERROR: Could not find valid memory configuration!\n";
+            return 1;
+        }
+        
+        // Count and validate blocks
+        size_t num_1d_blocks = 0;
+        for (const auto& block : optimal_config.blocks) {
+            if (block.is_1d) num_1d_blocks++;
+        }
+        
+        if (use_optimal_memory_config && num_1d_blocks != 1) {
+            std::cerr << "ERROR: Expected exactly one 1D block, found " << num_1d_blocks << "\n";
+            return 1;
+        }
+        
+        if (only_2d && num_1d_blocks != 0) {
+            std::cerr << "ERROR: Expected no 1D blocks with --only-2d flag, found " << num_1d_blocks << "\n";
+            return 1;
+        }
+        
+        num_blocks = optimal_config.blocks.size();
+        memory_blocks.resize(num_blocks);
+        
+        std::cout << "=== Optimal Configuration ===\n";
+        std::cout << "Total blocks: " << num_blocks << "\n";
+        std::cout << "Total physical qubits: " << optimal_config.physical_qubits << "\n\n";
+        
+        // Create memory blocks from optimal configuration
+        size_t idx = 0;
+        for (auto block : optimal_config.blocks) {
+            if (block.is_1d) {
+                // Enforce minimum of 8 logical qubits for 1D block (only when use_optimal_memory_config is set)
+                if (use_optimal_memory_config && block.logical_qubits < 8) {
+                    std::cout << "1D block has < 8 qubits (" << block.logical_qubits 
+                              << "), reconfiguring to 2 rows × 6 row_length = 8 qubits\n";
+                    block.rows = 2;
+                    block.row_length = 6;
+                    block.logical_qubits = 8;
+                    block.inner_code_distance = sim::yoked_codes::yoked_1d_min_inner_distance(
+                        block.rows, block.row_length, TARGET_MEMORY_ERROR_RATE);
+                    block.yoke_cycle_rounds = sim::yoked_codes::yoked_1d_yoke_cycle_rounds(
+                        block.rows, block.inner_code_distance);
+                    block.achieved_error_rate = sim::yoked_codes::yoked_1d_error_rate(
+                        block.yoke_cycle_rounds, block.row_length, block.inner_code_distance);
+                }
+                
+                std::cout << "  Creating 1D block: " << block.logical_qubits << " logical qubits, "
+                          << block.rows << " rows, " << block.row_length << " row_length, "
+                          << "d_inner=" << block.inner_code_distance << "\n";
+                          
+                memory_blocks[idx++] = new sim::YOKED_1D_STORAGE(
+                    m_freq_khz,
+                    block.rows,
+                    block.logical_qubits,
+                    block.inner_code_distance,
+                    MEMORY_CODE_DISTANCE
+                );
+            } else {
+                std::cout << "  Creating 2D block: " << block.logical_qubits << " logical qubits, "
+                          << "grid_length=" << block.grid_length << ", "
+                          << "d_inner=" << block.inner_code_distance << "\n";
+                          
+                memory_blocks[idx++] = new sim::YOKED_COLD_STORAGE(
+                    m_freq_khz,
+                    block.logical_qubits,
+                    block.inner_code_distance,
+                    MEMORY_CODE_DISTANCE
+                );
+            }
+        }
+        
+        std::cout << "==============================\n\n";
     } else {
-        // Yoked: use YOKED_COLD_STORAGE class, with optional 1D intermediate storage
+        // Yoked: use YOKED_COLD_STORAGE class, with optional 1D intermediate storage (manual config)
         const int memory_block_capacity = 194;
         size_t cold_storage_qubits = main_memory_qubits;
         size_t has_1d_storage = 0;

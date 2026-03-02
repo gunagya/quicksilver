@@ -8,6 +8,7 @@
 #include "sim/memory_subsystem.h"
 #include <cmath>
 #include <cstddef>
+#include <ios>
 
 namespace sim
 {
@@ -108,9 +109,10 @@ long YOKED_COLD_STORAGE::operate() {
 
 void YOKED_COLD_STORAGE::error_stats() {
     std::cout << "YOKED_COLD_STORAGE Error Stats:\n";
-    std::cout << "Total yoke cycles completed: " << ro_ << "\n";
-    std::cout << "RMQ r per yoke cycle: " << pow(sum_rpow4_ / ro_, 0.25) << "\n";
-    std::cout << "Ideal yoke cycle rounds: " << yoke_cycle_rounds_ << "\n";
+    std::cout << "RMQ r per yoke cycle: " << std::pow(sum_rpow4_ / ro_, 0.25) << " vs an ideal " << yoke_cycle_rounds_ << "\n";
+    std::cout << "Per logical-qubit round error rate:" << std::scientific << (sum_rpow4_ * pow(grid_length_, 4) 
+    * std::pow(150.0, -static_cast<double>(inner_code_distance_)) / 50000.0) 
+    / (current_cycle() * effective_code_distance_ * ((grid_length_-2)*(grid_length_-2)-2))<<'\n';
 }
 
 } // namespace sim

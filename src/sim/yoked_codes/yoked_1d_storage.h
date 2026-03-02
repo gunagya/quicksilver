@@ -34,7 +34,7 @@ class YOKED_1D_STORAGE : public sim::STORAGE
 
     void set_memory_subsystem(MEMORY_SUBSYSTEM* mem_subsystem);
 
-    void feed_memory_instructions(std::vector<INSTRUCTION*> mem_insts, const std::vector<QUBIT*>& client_qubits);
+    void feed_memory_instructions(std::vector<std::pair<size_t, INSTRUCTION*>> mem_insts, const std::vector<QUBIT*>& client_qubits);
 
     void error_stats();
 
@@ -44,7 +44,7 @@ class YOKED_1D_STORAGE : public sim::STORAGE
     const size_t yoke_cycle_rounds_;
     const size_t max_mem_rounds_;
 
-    std::map<QUBIT*, bool> need_qubits_; 
+    std::map<QUBIT*, size_t> need_qubits_;  // Maps qubit to its order (layer or depth)
     std::vector<QUBIT*> remove_qubits_;
 
     // Statistics for tracking residence time (split by destination)
@@ -57,6 +57,10 @@ class YOKED_1D_STORAGE : public sim::STORAGE
     // Statistics for tracking needed vs unneeded qubits in 1D storage
     double s_total_needed_percentage{0};  // Cumulative percentage of needed qubits
     uint64_t s_cycle_samples{0};  // Number of cycles sampled
+    
+    // Statistics for feed_memory_instructions calls
+    uint64_t s_total_needed_qubits{0};  // Cumulative count of needed qubits from all feed calls
+    uint64_t s_feed_call_count{0};  // Number of times feed_memory_instructions was called
   
     enum PHASE {
         CHECK_YOKE,

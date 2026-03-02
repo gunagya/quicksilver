@@ -121,6 +121,7 @@ set(SIM_FILES
     src/sim/yoked_codes/yoked_cold_storage.cpp
     src/sim/yoked_codes/yoked_architecture.cpp
     src/sim/yoked_codes/yoked_1d_storage.cpp
+    src/sim/yoked_codes/memory_optimizer.cpp
     src/sim.cpp)
 
 ###################################################
@@ -221,6 +222,13 @@ add_executable(yoked_simulator src/sim/yoked_codes/yoked_simulator.cpp
 target_include_directories(yoked_simulator PRIVATE "src")
 target_compile_options(yoked_simulator PRIVATE ${COMPILE_OPTIONS})
 target_link_libraries(yoked_simulator PRIVATE qs_simulator)
+
+# Memory configuration optimizer (optimize_memory_config)
+
+add_executable(optimize_memory_config src/sim/yoked_codes/optimize_memory_config.cpp)
+target_include_directories(optimize_memory_config PRIVATE "src")
+target_compile_options(optimize_memory_config PRIVATE ${COMPILE_OPTIONS})
+target_link_libraries(optimize_memory_config PRIVATE qs_simulator)
 
 ###################################################
 ###################################################

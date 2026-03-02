@@ -90,7 +90,7 @@ long
 YOKED_ARCHITECTURE::fetch_and_execute_instructions_from_client(CLIENT* c)
 {
     if (yoked_1d_storage_!=nullptr && current_cycle()%dag_sample_rate == 0) {
-        yoked_1d_storage_->feed_memory_instructions(c->dag()->get_memory_instructions_upto_layers(dag_lookahead), c->qubits());
+        yoked_1d_storage_->feed_memory_instructions(c->dag()->get_memory_instructions_upto_depth(dag_lookahead), c->qubits());
     }
 
     auto front_layer = c->get_ready_instructions(
