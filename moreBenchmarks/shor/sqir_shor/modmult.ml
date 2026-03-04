@@ -78,14 +78,14 @@ let gen_modmult_circuit n a power =
   circuit
 
 (* light argument parsing *)
-let n = ref 0
-let a = ref 0
+let n = ref Z.zero
+let a = ref Z.zero
 let power = ref 0
 let bitwidth = ref 0
 let usage = "usage: " ^ Sys.argv.(0) ^ " -N int -a int [--power int] [--bitwidth int]"
 let speclist = [
-    ("-N", Arg.Set_int n, ": modulus N");
-    ("-a", Arg.Set_int a, ": base a (must be coprime to N)");
+    ("-N", Arg.String (fun s -> n := Z.of_string s), ": modulus N");
+    ("-a", Arg.String (fun s -> a := Z.of_string s), ": base a (must be coprime to N)");
     ("--power", Arg.Set_int power, ": extract circuit for a^(2^power) mod N (default: 0)");
     ("--bitwidth", Arg.Set_int bitwidth, ": specify bitwidth for larger N (e.g., 2048 for RSA-2048)")
   ]
@@ -124,19 +124,19 @@ if (!bitwidth > 0) then (
   let filename = Printf.sprintf "out/shor_modmult_representative_%dbit.qasm" !bitwidth in
   write_qasm_file filename circuit actual_circuit_qubits;
   printf "Written to %s\n" filename
-) else if (!n <= 1) then
+) else if (!n <= Z.one) then
   printf "ERROR: Requires 1 < N or --bitwidth\n%!"
-else if (!a <= 0 || !n <= !a) then
+else if (!a <= Z.zero || !n <= !a) then
   printf "ERROR: Requires 0 < a < N\n%!"
-else if (Z.gcd (Z.of_int !a) (Z.of_int !n) > Z.one) then
+else if (Z.gcd !a !n > Z.one) then
   printf "ERROR: Requires a, N coprime\n%!"
 else (
-  let n_z = Z.of_int !n in
-  let a_z = Z.of_int !a in
+  let n_z = !n in
+  let a_z = !a in
   let power_z = Z.of_int !power in
 
-  printf "Generating modular multiplication circuit for N=%d, a=%d, power=%d\n%!" !n !a !power;
-  printf "Computing: a^(2^%d) * x mod %d\n%!" !power !n;
+  printf "Generating modular multiplication circuit for N=%s, a=%s, power=%d\n%!" (Z.to_string n_z) (Z.to_string a_z) !power;
+  printf "Computing: a^(2^%d) * x mod %s\n%!" !power (Z.to_string n_z);
 
   let circuit = gen_modmult_circuit n_z a_z power_z in
   let total_qubits = Z.to_int (modmult_nqs n_z) in
@@ -150,7 +150,8 @@ else (
   printf "  Total qubits: %d\n" total_qubits;
   printf "  Gate count: %d\n" gate_count;
 
-  let filename = Printf.sprintf "out/shor_modmult_N%d_a%d_pow%d.qasm" !n !a !power in
+  let bitwidth = Z.numbits n_z in
+  let filename = Printf.sprintf "out/shor_modmult_%d_a%s_pow%d.qasm" bitwidth (Z.to_string a_z) !power in
   write_qasm_file filename circuit total_qubits;
   printf "Written to %s\n" filename
 )

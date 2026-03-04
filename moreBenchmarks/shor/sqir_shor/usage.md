@@ -44,26 +44,6 @@ dune exec ./modmult.exe -- -N 15 -a 7
 dune exec ./modexp.exe -- -N 15 -a 7
 ```
 
-### SQIR Library Modules
-
-All SQIR library modules are included in `helpers/` directory:
-
-**Core modules:**
-- `ExtractionGateSet.ml` - Gate definitions and QASM conversion
-- `ExtrShor.ml` - Shor's algorithm circuit components
-- `Run.ml` - QASM file I/O
-- `RCIR.ml` - Reversible circuit intermediate representation
-- `ModMult.ml` - Modular multiplication circuits
-
-**Supporting modules:**
-- `Nat.ml`, `PeanoNat.ml` - Natural number operations
-- `Datatypes.ml` - Basic data structures
-- `List0.ml` - List operations
-- `DiscreteProb.ml` - Discrete probability
-- `ContFrac.ml` - Continued fractions
-- `Main.ml`, `Shor.ml` - Main algorithm components
-- `RealAux.ml`, `Summation.ml` - Auxiliary functions
-
 ## Usage
 
 ### Single Modular Multiplication (modmult.ml)
@@ -95,6 +75,13 @@ dune exec ./modmult.exe -- -N 16777259 -a 3 --power 0
 - `--power int` : Power parameter (computes a^(2^power) mod N), default: 0
 - `--bitwidth int` : Generate representative structure for specified bitwidth
 
+The bitwidth flag, e.g. 
+```bash
+dune exec ./modmult.exe -- --bitwidth 2048
+```
+will generate an N=15 circuit with 2048-bit statistics. It won't write the actual qasm file. 
+
+
 ### Increasing the OCaml stack size
 
 ```bash
@@ -107,6 +94,15 @@ dune exec ./modmult.exe -- "$@"
 EOF
 chmod +x run_with_large_stack.sh
 ```
+
+For something like RSA-256, you could try something like
+```bash
+export OCAMLRUNPARAM='l=10G,h=30G'  # 10GB stack, 30GB heap
+ulimit -s unlimited                  # Remove OS stack limit
+ulimit -v unlimited                  # Remove virtual memory limit
+```
+
+but might be wiser to try a streaming approach which incrementally writes gates, consuming constant memory. 
 
 ### Full QPE Circuit (modexp.ml)
 
@@ -128,6 +124,26 @@ dune exec ./modexp.exe -- -N 35 -a 3
 - `-a int` : Base (must be 0 < a < N and coprime with N)
 
 Practical limit is N < 100. 
+
+### SQIR Library Modules
+
+All SQIR library modules are included in `helpers/` directory:
+
+**Core modules:**
+- `ExtractionGateSet.ml` - Gate definitions and QASM conversion
+- `ExtrShor.ml` - Shor's algorithm circuit components
+- `Run.ml` - QASM file I/O
+- `RCIR.ml` - Reversible circuit intermediate representation
+- `ModMult.ml` - Modular multiplication circuits
+
+**Supporting modules:**
+- `Nat.ml`, `PeanoNat.ml` - Natural number operations
+- `Datatypes.ml` - Basic data structures
+- `List0.ml` - List operations
+- `DiscreteProb.ml` - Discrete probability
+- `ContFrac.ml` - Continued fractions
+- `Main.ml`, `Shor.ml` - Main algorithm components
+- `RealAux.ml`, `Summation.ml` - Auxiliary functions
 
 ## Works cited
 

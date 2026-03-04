@@ -132,7 +132,8 @@ else (
   printf "  Total gates: %d\n" gate_count;
   printf "  Gates per modmult (avg): %d\n" (gate_count / m);
 
-  let filename = Printf.sprintf "out/shor_qpe_N%d_a%d.qasm" !n !a in
+  let bitwidth = Z.numbits n_z in
+  let filename = Printf.sprintf "out/shor_qpe_%d_a%d.qasm" bitwidth !a in
   write_qasm_file filename circuit total_qubits;
   printf "\nWritten to %s\n" filename
 )

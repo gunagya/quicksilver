@@ -1,4 +1,4 @@
-# dune exec ./modmult.exe -- -N 16777259 -a 3 --power 0
+# dune exec ./modmult.exe -- -N 282218154174062786142462354887301606391 -a 242864084896979232100740843900452088330
 # OCAMLPARAM: unset
 # Shared cache: enabled-except-user-rules
 # Shared cache location: /Users/kabirdubey/.cache/dune/db
@@ -14,4 +14,4 @@
 #  ; build_dir = In_build_dir "default"
 #  ; instrument_with = []
 #  }
-$ /Users/kabirdubey/.opam/default/bin/ocamlc.opt -config > /var/folders/j8/wb4qbgyj31l2f745vj9jk5sm0000gn/T/dune_a2a12b_output
+$ /Users/kabirdubey/.opam/default/bin/ocamlc.opt -config > /var/folders/j8/wb4qbgyj31l2f745vj9jk5sm0000gn/T/dune_b16ece_output
