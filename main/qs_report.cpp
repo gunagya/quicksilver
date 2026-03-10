@@ -29,7 +29,7 @@ struct ProgramStats
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
 
-ProgramStats analyze_binary_file(const std::string& input_file, uint64_t instruction_limit = 0)
+ProgramStats analyze_binary_file(const std::string& input_file, uint64_t instruction_limit = 0, bool verbose = false)
 {
     ProgramStats stats;
     
@@ -66,6 +66,9 @@ ProgramStats analyze_binary_file(const std::string& input_file, uint64_t instruc
         
         if (is_software_instruction(inst.type))
             continue;
+
+        if (verbose)
+            std::cout << "[" << stats.total_instructions << "] " << inst << "\n";
 
         stats.total_instructions++;
 
@@ -165,15 +168,17 @@ int main(int argc, char** argv)
 {
     std::string input_file;
     int64_t instruction_limit = 0;
+    bool verbose = false;
     
     ARGPARSE()
         .required("input-file", "compressed binary program file (.bin, .gz, .xz)", input_file)
         .optional("-i", "--instruction-limit", "Maximum number of instructions to read (0 = unlimited)", instruction_limit, (int64_t)0)
+        .optional("-v", "--verbose", "Print each instruction as it is read", verbose, false)
         .parse(argc, argv);
     
     try
     {
-        ProgramStats stats = analyze_binary_file(input_file, (uint64_t)instruction_limit);
+        ProgramStats stats = analyze_binary_file(input_file, (uint64_t)instruction_limit, verbose);
         
         // Print the report
         std::cout << "\n";

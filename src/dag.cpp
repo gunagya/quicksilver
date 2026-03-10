@@ -4,32 +4,12 @@
  * */
 
 #include "dag.h"
+#include "instruction.h"
 
 #include <unordered_set>
 
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
-
-namespace {
-
-inline size_t
-get_inst_depth_score(INSTRUCTION::TYPE t)
-{
-    if (is_rotation_instruction(t))
-        return 20;
-    else if (is_toffoli_like_instruction(t))
-        return 10;
-    else if (is_cx_like_instruction(t))
-        return 2;
-    else if (is_software_instruction(t))
-        return 0;
-    else if (is_memory_access(t))
-        return 5;
-    else
-        return 1;
-}
-
-}  // namespace
 
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
@@ -227,7 +207,7 @@ DAG::get_memory_instructions_upto_depth(size_t depth) const
                 if (is_memory_access(x->inst->type))
                     mem_insts.push_back({x->tmp_depth_, x->inst});
 
-                size_t next_depth = x->tmp_depth_ + get_inst_depth_score(x->inst->type);
+                size_t next_depth = x->tmp_depth_ + instruction_depth_weight(x->inst->type);
                 for (node_type* y : x->dependent)
                 {
                     if (y->last_generation_ != gen)

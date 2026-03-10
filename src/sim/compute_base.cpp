@@ -105,6 +105,9 @@ COMPUTE_BASE::execute_instruction(inst_ptr inst, std::array<QUBIT*, 3>&& args)
     case INSTRUCTION::TYPE::MSWAP:
         return do_memory_access(inst, args[0], args[1]);
 
+    case INSTRUCTION::TYPE::MPLACE:
+        return do_placement_access(inst, args[0], args[1], args[2]);
+
     default:
         std::cerr << "COMPUTE_BASE::execute_instruction: unknown instruction: " << *inst << _die{};
     }
@@ -177,6 +180,16 @@ COMPUTE_BASE::do_memory_access(inst_ptr inst, QUBIT* ld, QUBIT* st)
         _update_available_cycle({ld, st}, current_cycle() + result.latency + 2);
         return execute_result_type{.progress=1, .latency=result.latency+2};
     }
+    return execute_result_type{};
+}
+
+////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////
+
+COMPUTE_BASE::execute_result_type
+COMPUTE_BASE::do_placement_access(inst_ptr /*inst*/, QUBIT* /*ld*/, QUBIT* /*st*/, QUBIT* /*evict_1d*/)
+{
+    std::cerr << "COMPUTE_BASE::do_placement_access: MPLACE not supported by this architecture" << _die{};
     return execute_result_type{};
 }
 

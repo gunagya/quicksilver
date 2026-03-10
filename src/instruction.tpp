@@ -3,6 +3,7 @@
  *  date:   4 January 2026
  * */
 
+#include "instruction.h"
 #include <cassert>
 
 ////////////////////////////////////////////////////////////
@@ -64,7 +65,14 @@ is_software_instruction(INSTRUCTION::TYPE t)
 constexpr bool
 is_memory_access(INSTRUCTION::TYPE t)
 {
-    return t == INSTRUCTION::TYPE::MSWAP;
+    return t == INSTRUCTION::TYPE::MSWAP
+        || t == INSTRUCTION::TYPE::MPLACE;
+}
+
+constexpr bool
+is_prefetch_instruction(INSTRUCTION::TYPE t)
+{
+    return t == INSTRUCTION::TYPE::MPREFETCH;
 }
 
 constexpr bool
@@ -126,11 +134,13 @@ get_inst_qubit_count(INSTRUCTION::TYPE t)
         case INSTRUCTION::TYPE::CZ:
         case INSTRUCTION::TYPE::SWAP:
         case INSTRUCTION::TYPE::MSWAP:
+        case INSTRUCTION::TYPE::MPREFETCH:
             return 2;
 
         // 3-qubit gates
         case INSTRUCTION::TYPE::CCX:
         case INSTRUCTION::TYPE::CCZ:
+        case INSTRUCTION::TYPE::MPLACE:
             return 3;
 
         // No-op
@@ -143,7 +153,22 @@ get_inst_qubit_count(INSTRUCTION::TYPE t)
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
 
-template <class ITER> INSTRUCTION::qubit_array 
+constexpr size_t
+instruction_depth_weight(INSTRUCTION::TYPE t)
+{
+    if (is_rotation_instruction(t))      return 20;
+    if (is_toffoli_like_instruction(t))  return 10;
+    if (is_memory_access(t))             return  5;  // includes MSWAP and MPLACE
+    if (is_prefetch_instruction(t))      return  5;
+    if (is_cx_like_instruction(t))       return  2;
+    if (is_software_instruction(t))      return  0;
+    return 1;
+}
+
+////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////
+
+template <class ITER> INSTRUCTION::qubit_array
 convert_qubit_container_into_qubit_array(INSTRUCTION::TYPE type, ITER begin, ITER end)
 {
     assert(std::distance(begin, end) == get_inst_qubit_count(type));

@@ -31,6 +31,8 @@ constexpr std::string_view BASIS_GATES[] =
 
     // memory instruction:
     "mswap",
+    "mprefetch",
+    "mplace",
 
     "nil"
 };
@@ -60,10 +62,16 @@ public:
 
         /*
          * Memory instructions:
-         *  MSWAP q0, q1   loads q0 into the compute subsystem and stores q1 into the memory subsystem.
+         *  MSWAP    q0, q1        loads q0 into the compute subsystem and stores q1 into the memory subsystem.
+         *  MPREFETCH q0, q1       background prefetch: brings q0 from cold into intermediate storage,
+         *                         evicting q1 from intermediate to cold.  Never executed by the compute region.
+         *  MPLACE   q0, q1, q2   loads q0 from cold into compute, stores q1 from compute into 1D
+         *                         intermediate storage, and evicts q2 from 1D to cold storage.
+         *                         Only emitted when q0 comes from cold and 1D placement is beneficial.
          * */
         MSWAP,
-
+        MPREFETCH,
+        MPLACE,
         NIL
     };
 
@@ -239,10 +247,19 @@ void         write_instruction_to_stream(generic_strm_type&, const INSTRUCTION*)
  * */
 constexpr bool is_software_instruction(INSTRUCTION::TYPE);
 constexpr bool is_memory_access(INSTRUCTION::TYPE);
+constexpr bool is_prefetch_instruction(INSTRUCTION::TYPE);
 constexpr bool is_t_like_instruction(INSTRUCTION::TYPE);
 constexpr bool is_rotation_instruction(INSTRUCTION::TYPE);
 constexpr bool is_cx_like_instruction(INSTRUCTION::TYPE);
 constexpr bool is_toffoli_like_instruction(INSTRUCTION::TYPE);
+
+/*
+ * Returns the DAG depth weight for an instruction type.
+ * Matches the scoring used by DAG::get_memory_instructions_upto_depth:
+ *   rotation  → 20,  toffoli-like → 10,  memory → 5,  cx-like → 2,
+ *   software  →  0,  everything else → 1
+ * */
+constexpr size_t instruction_depth_weight(INSTRUCTION::TYPE);
 
 /*
  * This function is a constexpr function that returns

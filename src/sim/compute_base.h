@@ -65,6 +65,7 @@ protected:
     virtual execute_result_type do_cx_like_gate(inst_ptr, QUBIT* ctrl, QUBIT* target);
     virtual execute_result_type do_t_like_gate(inst_ptr, QUBIT*);
     virtual execute_result_type do_memory_access(inst_ptr, QUBIT* ld, QUBIT* st);
+    virtual execute_result_type do_placement_access(inst_ptr, QUBIT* ld, QUBIT* st, QUBIT* evict_1d);
 
     /*
      * Executes the uops for a rotation gate. Upon a success, additional gates

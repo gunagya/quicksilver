@@ -65,13 +65,16 @@ YOKED_ARCHITECTURE::operate()
     for (auto* storage : memory_hierarchy_->storages())
         if (auto* yoked_cold_storage = dynamic_cast<YOKED_COLD_STORAGE*>(storage)) {
             for (QUBIT* q : yoked_cold_storage->drain_newly_verified_qubits()) {
-                can_operate_non_clifford_[q] = true;
-                // Track delay for qubits loaded from 1D that are now ready
-                if (qubit_1d_load_cycle_.count(q) > 0) {
-                    s_total_1d_to_ready_delay += current_cycle() - qubit_1d_load_cycle_[q];
-                    s_1d_loads_with_delay++;
-                    qubit_1d_load_cycle_.erase(q);
+                // Only mark ready if the qubit is not in cold storage.
+                if (local_memory_->contains(q) || (yoked_1d_storage_!=nullptr && yoked_1d_storage_->contains(q))) {
+                    can_operate_non_clifford_[q] = true;
+                    // Track delay only if in compute
+                    if (local_memory_->contains(q) && qubit_1d_load_cycle_.count(q) > 0) {
+                        s_total_1d_to_ready_delay += current_cycle() - qubit_1d_load_cycle_[q];
+                        s_1d_loads_delayed++;
+                    }
                 }
+                qubit_1d_load_cycle_.erase(q);
             }
             for (QUBIT* q : yoked_cold_storage->drain_newly_stored_qubits())
                 can_operate_non_clifford_[q] = false;
@@ -89,21 +92,66 @@ YOKED_ARCHITECTURE::operate()
 long
 YOKED_ARCHITECTURE::fetch_and_execute_instructions_from_client(CLIENT* c)
 {
-    if (yoked_1d_storage_!=nullptr && current_cycle()%dag_sample_rate == 0) {
-        yoked_1d_storage_->feed_memory_instructions(c->dag()->get_memory_instructions_upto_depth(dag_lookahead), c->qubits());
+    if (yoked_1d_storage_ != nullptr) {
+        // Retire MPREFETCH instructions whose 1D<->cold operations have
+        // completed (or been elided) since the last tick.  Retiring them
+        // here — before get_ready_instructions — allows any downstream MSWAP
+        // that was blocked on a MPREFETCH to become ready in the same tick.
+        for (INSTRUCTION* done_inst : yoked_1d_storage_->drain_completed_prefetches())
+            c->retire_instruction(done_inst);
+
+        // Feed newly visible MPREFETCHes to 1D storage.  YOKED_1D_STORAGE
+        // deduplicates by instruction pointer so re-feeding already-inflight
+        // ones is safe.  Loop because retiring elided prefetches may unblock
+        // further MPREFETCH nodes at the DAG front.
+        while (true) {
+            auto prefetch_insts = c->dag()->get_front_layer_if(
+                [] (const auto* inst) { return is_prefetch_instruction(inst->type); });
+            if (prefetch_insts.empty())
+                break;
+            std::vector<std::tuple<QUBIT*, QUBIT*, INSTRUCTION*>> prefetches;
+            prefetches.reserve(prefetch_insts.size());
+            for (auto* inst : prefetch_insts) {
+                QUBIT* ld = c->qubits()[inst->q_begin()[0]];
+                QUBIT* st = c->qubits()[inst->q_begin()[1]];
+                prefetches.emplace_back(ld, st, inst);
+            }
+            size_t newly_fed = yoked_1d_storage_->feed_prefetch_instructions(std::move(prefetches));
+            // Drain any immediately elided entries so downstream MSWAPs unblock.
+            for (INSTRUCTION* done_inst : yoked_1d_storage_->drain_completed_prefetches())
+                c->retire_instruction(done_inst);
+            // If nothing new was enqueued all front-layer MPREFETCHes are
+            // already in-flight; no further progress possible this tick.
+            if (newly_fed == 0)
+                break;
+        }
     }
 
     auto front_layer = c->get_ready_instructions(
                             [&c, cc=current_cycle(), this] (const auto* inst)
                             {
+                                // MPREFETCH instructions are handled separately; never execute them here.
+                                if (is_prefetch_instruction(inst->type))
+                                    return false;
+
                                 bool ready = true;
                                 // Check if all qubits are available.
                                 ready &= std::all_of(inst->q_begin(), inst->q_end(),
                                             [&c, cc] (auto q_id) { return c->qubits()[q_id]->cycle_available <= cc; });
                                 // Check if memory request can be served.
                                 if (is_memory_access(inst->type)) {
-                                    QUBIT* fetched_qubit = memory_hierarchy_->retrieve_qubit(0, inst->q_begin()[0]);
-                                    ready &= (*memory_hierarchy_->lookup(fetched_qubit))->has_free_adapter();
+                                    if (inst->type == INSTRUCTION::TYPE::MPLACE) {
+                                        // MPLACE needs both cold adapter (for ld) AND
+                                        // 1D adapter (for evict_1d) simultaneously.
+                                        QUBIT* ld_qubit = memory_hierarchy_->retrieve_qubit(0, inst->q_begin()[0]);
+                                        ready &= (ld_qubit != nullptr)
+                                            && (*memory_hierarchy_->lookup(ld_qubit))->has_free_adapter();
+                                        ready &= (yoked_1d_storage_ != nullptr)
+                                            && yoked_1d_storage_->has_free_adapter();
+                                    } else {
+                                        QUBIT* fetched_qubit = memory_hierarchy_->retrieve_qubit(0, inst->q_begin()[0]);
+                                        ready &= (*memory_hierarchy_->lookup(fetched_qubit))->has_free_adapter();
+                                    }
                                 } else {
                                     // Check if all qubits are in local memory for non-memory instructions.
                                     if(!std::all_of(inst->q_begin(), inst->q_end(),
@@ -187,13 +235,11 @@ YOKED_ARCHITECTURE::do_memory_access(inst_ptr inst, QUBIT* ld, QUBIT* st)
         // Track statistics
         if (is_1d_load) {
             s_1d_loads++;
-            // Check if qubit is already ready for non-Cliffords
             if (can_operate_non_clifford_[ld]) {
-                // Already ready - delay is 0
-                s_total_1d_to_ready_delay += 0;
-                s_1d_loads_with_delay++;
+                // Qubit was already verified before the MSWAP fired — prefetch succeeded.
+                s_1d_loads_already_ready++;
             } else {
-                // Not ready yet - record the cycle when loaded from 1D storage
+                // Qubit not yet verified — record load cycle so we can measure the wait.
                 qubit_1d_load_cycle_[ld] = current_cycle();
             }
         } else if (is_2d_load) {
@@ -202,6 +248,62 @@ YOKED_ARCHITECTURE::do_memory_access(inst_ptr inst, QUBIT* ld, QUBIT* st)
     }
     
     return result;
+}
+
+////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////
+
+YOKED_ARCHITECTURE::execute_result_type
+YOKED_ARCHITECTURE::do_placement_access(inst_ptr inst, QUBIT* ld, QUBIT* st, QUBIT* evict_1d)
+{
+    if (yoked_1d_storage_ == nullptr) {
+        std::cerr << "YOKED_ARCHITECTURE::do_placement_access: no 1D storage present" << _die{};
+    }
+
+    // Multiple MPLACEs can appear in the same DAG front layer (the RRI placer
+    // emits up to k per commit zone).  All pass the readiness check while the
+    // 1D adapter is free, but execution is serial: the first consumes it.
+    // Return progress=0 for subsequent ones so they retry next cycle.
+    if (!yoked_1d_storage_->has_free_adapter())
+        return execute_result_type{};
+
+    // Step 1: Cold storage swap (parallel path A):
+    //   ld leaves cold; evict_1d enters cold from 1D.
+    auto cold_result = memory_hierarchy_->do_memory_access(ld, evict_1d, current_cycle(), freq_khz);
+    if (!cold_result.success)
+        return execute_result_type{};
+
+    // Step 2: 1D storage swap (parallel path B, parallel with step 1):
+    //   evict_1d leaves 1D; st enters 1D from compute.
+    auto one_d_result = yoked_1d_storage_->do_placement_eviction(evict_1d, st);
+    if (!one_d_result.success) {
+        std::cerr << "YOKED_ARCHITECTURE::do_placement_access: 1D swap failed (internal error)\n" << _die{};
+    }
+
+    // Step 3: Local memory swap:
+    //   st leaves compute → 1D; ld enters compute from cold.
+    auto local_result = local_memory_->do_memory_access(st, ld);
+    if (!local_result.success) {
+        std::cerr << "YOKED_ARCHITECTURE::do_placement_access: local memory swap failed\n" << _die{};
+    }
+
+    // Parallel latency: cold swap and 1D swap run concurrently, then +2 for local.
+    cycle_type one_d_latency = convert_cycles(
+        one_d_result.latency, one_d_result.storage_freq_khz, freq_khz);
+    cycle_type total_latency = std::max(cold_result.latency, one_d_latency) + 2;
+
+    // Update cycle_available for all three qubits.
+    ld->cycle_available       = std::max(ld->cycle_available,       current_cycle() + total_latency);
+    st->cycle_available       = std::max(st->cycle_available,       current_cycle() + total_latency);
+    evict_1d->cycle_available = std::max(evict_1d->cycle_available, current_cycle() + total_latency);
+
+    // Stats:
+    // ld arrives from cold — counted separately from plain cold MSWAP.
+    s_mplace_loads++;
+    // can_operate_non_clifford_ for ld remains false (was false in cold);
+    // evict_1d going to cold is handled by drain_newly_stored_qubits() in operate().
+
+    return execute_result_type{.progress=1, .latency=total_latency};
 }
 
 ////////////////////////////////////////////////////////////
@@ -275,22 +377,26 @@ YOKED_ARCHITECTURE::print_yoked_storage_stats()
     std::cout << "\nYoked Storage Statistics:\n";
     std::cout << "=========================\n";
     
-    uint64_t total_loads = s_1d_loads + s_2d_loads;
+    uint64_t total_loads = s_1d_loads + s_2d_loads + s_mplace_loads;
     if (total_loads > 0) {
-        double miss_rate = 100.0 * s_2d_loads / total_loads;
+        double miss_rate = 100.0 * (s_2d_loads + s_mplace_loads) / total_loads;
         print_stat_line(std::cout, "Total memory loads", total_loads);
-        print_stat_line(std::cout, "Loads from 1D storage", s_1d_loads);
-        print_stat_line(std::cout, "Loads from 2D storage (misses)", s_2d_loads);
-        print_stat_line(std::cout, "Miss rate (%)", miss_rate);
+        print_stat_line(std::cout, "Loads from 1D storage (MSWAP)", s_1d_loads);
+        print_stat_line(std::cout, "Loads from 2D storage (cold MSWAP)", s_2d_loads);
+        print_stat_line(std::cout, "Loads from 2D storage via MPLACE", s_mplace_loads);
+        print_stat_line(std::cout, "Miss rate (%) [cold+mplace / total]", miss_rate);
     } else {
         print_stat_line(std::cout, "Total memory loads", 0);
     }
     
-    if (s_1d_loads_with_delay > 0) {
-        double avg_delay = static_cast<double>(s_total_1d_to_ready_delay) / s_1d_loads_with_delay;
+    if (s_1d_loads_delayed > 0) {
+        double avg_delay = static_cast<double>(s_total_1d_to_ready_delay) / s_1d_loads_delayed;
+        print_stat_line(std::cout, "1D loads: already verified at load time",  s_1d_loads_already_ready);
+        print_stat_line(std::cout, "1D loads: needed to wait for verification", s_1d_loads_delayed);
         print_stat_line(std::cout, "Avg delay: 1D load to non-Clifford ready (cycles)", avg_delay);
-        print_stat_line(std::cout, "Total 1D loads tracked for delay", s_1d_loads_with_delay);
     } else {
+        print_stat_line(std::cout, "1D loads: already verified at load time",  s_1d_loads_already_ready);
+        print_stat_line(std::cout, "1D loads: needed to wait for verification", 0UL);
         print_stat_line(std::cout, "Avg delay: 1D load to non-Clifford ready (cycles)", 0.0);
     }
     

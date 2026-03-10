@@ -6,7 +6,6 @@
 #include "sim/yoked_codes/yoked_1d_storage.h"
 
 #include "globals.h"
-#include "sim/client.h"
 #include "sim/configuration/resource_estimation.h"
 #include "sim/memory_subsystem.h"
 #include <cmath>
@@ -62,20 +61,7 @@ void YOKED_1D_STORAGE::set_memory_subsystem(MEMORY_SUBSYSTEM* mem_subsystem) {
 
 long YOKED_1D_STORAGE::operate() {
     r_ += effective_code_distance_;
-    
-    // Track percentage of needed qubits in 1D storage every cycle
-    if (!contents().empty()) {
-        size_t needed_count = 0;
-        for (auto* q : contents()) {
-            if (need_qubits_.count(q) > 0) {
-                needed_count++;
-            }
-        }
-        double needed_percentage = 100.0 * needed_count / contents().size();
-        s_total_needed_percentage += needed_percentage;
-        s_cycle_samples++;
-    }
-    
+
     switch (current_phase_) {
         case CHECK_YOKE:
             phase_progress_ += effective_code_distance_;
@@ -98,7 +84,7 @@ long YOKED_1D_STORAGE::operate() {
                 cycle_available_[0] = current_cycle() + 2;
                 ro_++;
             } else {
-                schedule_memory_operations();
+                execute_prefetch();
             }
             break;
     }
@@ -125,82 +111,111 @@ YOKED_1D_STORAGE::do_memory_access(QUBIT* ld, QUBIT* st) {
     return result;
 }
 
-void YOKED_1D_STORAGE::schedule_memory_operations() {
-    if (!has_free_adapter() || remove_qubits_.empty() || need_qubits_.empty())
+void YOKED_1D_STORAGE::execute_prefetch() {
+    if (pending_prefetches_.empty() || !has_free_adapter())
         return;
-
-    // 1. Find the qubit with lowest order (earliest layer/depth) that is in memory system and not in 1d storage.
-    QUBIT* ld = nullptr;
-    size_t min_order = std::numeric_limits<size_t>::max();
-    
-    auto it = need_qubits_.begin();
-    while (it != need_qubits_.end()) {
-        QUBIT* candidate = it->first;
-        size_t order = it->second;
-        
-        if (contains(candidate) || memory_subsystem_->retrieve_qubit(candidate->client_id, candidate->qubit_id) == nullptr) {
-            // Already in 1d storage or not in memory system -- skip.
-            it = need_qubits_.erase(it);
-        } else {
-            if (order < min_order) {
-                min_order = order;
-                ld = candidate;
-            }
-            ++it;
+    // Drain stale entries from the front of the queue.
+    // A prefetch (ld, st) is stale if:
+    //   - st is no longer in 1D storage (already evicted), OR
+    //   - ld is already in 1D storage (already prefetched), OR
+    //   - ld is not in the memory hierarchy at all (it reached compute).
+    while (!pending_prefetches_.empty()) {
+        auto& entry = pending_prefetches_.front();
+        QUBIT* ld = entry.ld;
+        QUBIT* st = entry.st;
+        const bool st_in_1d   = contains(st);
+        const bool ld_in_1d   = contains(ld);
+        const bool ld_in_cold = !ld_in_1d
+            && memory_subsystem_->retrieve_qubit(ld->client_id, ld->qubit_id) != nullptr;
+        if (!st_in_1d || !ld_in_cold) {
+            completed_prefetches_.push(entry.inst);
+            pending_prefetches_.pop();
+            s_prefetches_elided++;
+            // ld not in 1D and not found in cold storage -> already reached compute
+            if (!ld_in_1d && !ld_in_cold)
+                s_prefetches_elided_ld_in_compute++;
+            continue;
         }
+        break;  // valid prefetch at front
     }
-    if (ld == nullptr)
+
+    if (pending_prefetches_.empty())
         return;
 
-    // 2. Pick the back of remove_qubits as the qubit to evict.
-    QUBIT* st = remove_qubits_.back();
+    auto& entry = pending_prefetches_.front();
+    QUBIT* ld = entry.ld;
+    QUBIT* st = entry.st;
 
-    // 3. Try to schedule the memory operation.
-    STORAGE::access_result_type result = memory_subsystem_->do_memory_access(ld, st, current_cycle(), freq_khz);
+    // Attempt the cold-storage side of the swap.
+    STORAGE::access_result_type result =
+        memory_subsystem_->do_memory_access(ld, st, current_cycle(), freq_khz);
     if (!result.success)
-        return;
+        return;  // cold adapter busy; leave entry in queue, retry next tick
 
-    // 4. Swap in 1d storage and clean up.
+    INSTRUCTION* inst = entry.inst;
+    pending_prefetches_.pop();
+
+    // Update 1D storage contents: st leaves 1D, ld enters 1D.
     result = STORAGE::do_memory_access(st, ld);
     assert(result.success);
 
-    // Track residence time statistics
-    // ld is entering 1D storage from 2D
-    qubit_entry_cycle_[ld] = current_cycle();
-    
-    // st is exiting 1D storage to 2D
+    // Track residence time: st exits 1D to cold.
     if (qubit_entry_cycle_.count(st) > 0) {
         s_residence_time_to_2d += current_cycle() - qubit_entry_cycle_[st];
         s_qubits_to_2d++;
         qubit_entry_cycle_.erase(st);
     }
+    // Track entry time: ld enters 1D from cold.
+    qubit_entry_cycle_[ld] = current_cycle();
 
-    remove_qubits_.pop_back();
-    need_qubits_.erase(ld);
+    s_prefetches_executed++;
+    completed_prefetches_.push(inst);
 }
 
-void YOKED_1D_STORAGE::feed_memory_instructions(std::vector<std::pair<size_t, INSTRUCTION*>> mem_insts, 
-    const std::vector<QUBIT*>& client_qubits) {
-    need_qubits_.clear();
-    remove_qubits_.clear();
-    for (const auto& [order, inst] : mem_insts) {
-        QUBIT* q = client_qubits[inst->q_begin()[0]];
-        // Keep the minimum order if qubit appears multiple times
-        if (need_qubits_.count(q) == 0) {
-            need_qubits_[q] = order;
-        } else {
-            need_qubits_[q] = std::min(need_qubits_[q], order);
-        }
+size_t YOKED_1D_STORAGE::feed_prefetch_instructions(
+    std::vector<std::tuple<QUBIT*, QUBIT*, INSTRUCTION*>> prefetches)
+{
+    size_t newly_added = 0;
+    for (auto& [ld, st, inst] : prefetches) {
+        if (inflight_prefetches_.count(inst))
+            continue;  // already queued, skip silently
+        inflight_prefetches_.insert(inst);
+        pending_prefetches_.push({ld, st, inst});
+        s_prefetches_received++;
+        newly_added++;
     }
-    for (auto qubit: contents()) {
-        if (need_qubits_.count(qubit) == 0) {
-            remove_qubits_.push_back(qubit);
-        }
+    return newly_added;
+}
+
+std::vector<INSTRUCTION*> YOKED_1D_STORAGE::drain_completed_prefetches() {
+    std::vector<INSTRUCTION*> out;
+    while (!completed_prefetches_.empty()) {
+        INSTRUCTION* inst = completed_prefetches_.front();
+        completed_prefetches_.pop();
+        inflight_prefetches_.erase(inst);
+        out.push_back(inst);
     }
-    
-    // Track statistics
-    s_total_needed_qubits += need_qubits_.size();
-    s_feed_call_count++;
+    return out;
+}
+
+YOKED_1D_STORAGE::access_result_type
+YOKED_1D_STORAGE::do_placement_eviction(QUBIT* evict_1d, QUBIT* st_compute)
+{
+    // Perform the base storage swap: evict_1d leaves 1D, st_compute enters 1D.
+    auto result = STORAGE::do_memory_access(evict_1d, st_compute);
+    if (!result.success)
+        return result;
+
+    // Residence time: evict_1d exits 1D toward cold (not compute).
+    if (qubit_entry_cycle_.count(evict_1d) > 0) {
+        s_residence_time_to_2d += current_cycle() - qubit_entry_cycle_[evict_1d];
+        s_qubits_to_2d++;
+        qubit_entry_cycle_.erase(evict_1d);
+    }
+    // Track entry time for the compute qubit entering 1D storage.
+    qubit_entry_cycle_[st_compute] = current_cycle();
+
+    return result;
 }
 
 void YOKED_1D_STORAGE::error_stats() {
@@ -227,21 +242,16 @@ void YOKED_1D_STORAGE::error_stats() {
         print_stat_line(std::cout, "Avg residence time (1D -> 2D) [cycles]", 0.0);
     }
     
-    std::cout << "\n1D Storage Utilization:\n";
-    if (s_cycle_samples > 0) {
-        double avg_needed_percentage = s_total_needed_percentage / s_cycle_samples;
-        print_stat_line(std::cout, "Avg % of needed qubits in 1D storage", avg_needed_percentage);
-        print_stat_line(std::cout, "Cycles sampled", s_cycle_samples);
+    std::cout << "\nPrefetch Stats:\n";
+    print_stat_line(std::cout, "Prefetches received",  s_prefetches_received);
+    print_stat_line(std::cout, "Prefetches executed",  s_prefetches_executed);
+    print_stat_line(std::cout, "Prefetches elided (stale)", s_prefetches_elided);
+    print_stat_line(std::cout, "  of which: ld already in compute", s_prefetches_elided_ld_in_compute);
+    if (s_prefetches_received > 0) {
+        double hit_rate = 100.0 * s_prefetches_executed / s_prefetches_received;
+        print_stat_line(std::cout, "Prefetch success rate (%)", hit_rate);
     } else {
-        print_stat_line(std::cout, "Avg % of needed qubits in 1D storage", 0.0);
-    }
-    
-    if (s_feed_call_count > 0) {
-        double avg_needed_qubits = static_cast<double>(s_total_needed_qubits) / s_feed_call_count;
-        print_stat_line(std::cout, "Avg needed qubits per feed call", avg_needed_qubits);
-        print_stat_line(std::cout, "Total feed_memory_instructions calls", s_feed_call_count);
-    } else {
-        print_stat_line(std::cout, "Avg needed qubits per feed call", 0.0);
+        print_stat_line(std::cout, "Prefetch success rate (%)", 0.0);
     }
 }
 

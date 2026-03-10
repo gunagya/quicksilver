@@ -48,6 +48,10 @@ struct config_type
     /* Policy specific parameters */
     int64_t hint_lookahead_depth{16};
     bool    hint_use_complex_selection{true};
+
+    /* Singlepass scheduler parameters */
+    int64_t intermediate_storage_capacity{8};
+    int64_t prefetch_min_layer_distance{0};  // suppress prefetch if mswap_layer - candidate_layer < this; 0 = disabled
 };
 
 /*
@@ -61,6 +65,12 @@ struct stats_type
     uint64_t memory_accesses{0};
     uint64_t scheduler_epochs{0};
     uint64_t total_unused_bandwidth{0};
+
+    /* Singlepass prefetch stats (zero for EIF/HINT) */
+    uint64_t prefetches_emitted{0};
+    uint64_t prefetch_hits{0};
+    uint64_t prefetch_misses{0};
+    uint64_t prefetch_suppressed{0};  // suppressed by min-layer-distance threshold
 };
 
 ////////////////////////////////////////////////////////////
@@ -105,6 +115,12 @@ struct result_type
      * could've been done (they may not be useful, however).
      * */
     size_t unused_bandwidth;
+
+    /*
+     * MPREFETCH instructions to emit before `memory_accesses` this epoch.
+     * Populated only by singlepass schedulers; empty for EIF/HINT.
+     * */
+    std::vector<inst_ptr> prefetch_accesses;
 };
 
 /*

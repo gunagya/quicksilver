@@ -145,7 +145,9 @@ storage_striped_initialization(const std::vector<STORAGE*>& storage_array,
 
     // first handle compute subsystem's local memory:
     _fill_up_storage_round_robin(st_begin, st_begin+1, qubits_allocated, qubits, num_active_clients);
-    _fill_up_storage_round_robin(st_begin+1, st_end, qubits_allocated, qubits, qubits.size());
+    _fill_up_storage_round_robin(st_begin+1, st_begin+2, qubits_allocated, qubits, num_active_clients);
+    if (storage_array.size() > 2)
+        _fill_up_storage_round_robin(st_begin+2, st_end, qubits_allocated, qubits, qubits.size());
 
     // verify that all clients have been fully allocated
     bool any_clients_incomplete = false;

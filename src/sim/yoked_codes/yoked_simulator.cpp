@@ -263,7 +263,7 @@ main(int argc, char* argv[])
         size_t idx = 0;
         if (has_1d_storage) {
             memory_blocks[idx++] = new sim::YOKED_1D_STORAGE(m_freq_khz,
-                                    4, // rows
+                                    2, // rows
                                     intermediate_storage_capacity,
                                     15, // inner code distance
                                     MEMORY_CODE_DISTANCE);

@@ -8,15 +8,11 @@
 
 #include "globals.h"
 #include "sim/storage.h"
+
 #include <cstddef>
-#include <functional>
-#include <unordered_set>
 
 namespace sim
 {
-
-// Callback type: invoked with set of qubits that are ready for non-Clifford ops
-using yoke_complete_callback_t = std::function<void(const std::unordered_set<QUBIT*>&)>;
 
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
@@ -29,10 +25,10 @@ class YOKED_COLD_STORAGE : public sim::STORAGE
 
     YOKED_COLD_STORAGE(double freq_khz, size_t logical_qubit_count, size_t inner_code_distance, size_t effective_code_distance);
 
-    // Override to track loaded qubits
+    // Override to track loads and stores.
     access_result_type do_memory_access(QUBIT* ld, QUBIT* st) override;
 
-    // Returns qubits that were newly verified since last drain.
+    // Loaded out qubits for which the yoke cycle afterward has just completed.
     std::vector<QUBIT*> drain_newly_verified_qubits();
     std::vector<QUBIT*> drain_newly_stored_qubits();
 
@@ -51,14 +47,16 @@ class YOKED_COLD_STORAGE : public sim::STORAGE
     size_t r_{0}, ro_{0};
     double sum_rpow4_{0};
 
-    // Callback invoked when yoke cycle completes
-    yoke_complete_callback_t yoke_complete_callback_{nullptr};
-
-    // Track qubits loaded during current yoke cycle
+    // Track qubits loaded out during current yoke cycle
     std::vector<QUBIT*> unverified_loaded_qubits_;
     // Qubits newly verified this yoke cycle
     std::vector<QUBIT*> newly_verified_qubits_;
     std::vector<QUBIT*> newly_stored_qubits_;
+
+    // Stats: memory ops served per MEMORY_OPS phase.
+    uint64_t s_mem_ops_this_phase_{0};   // ops in the current MEMORY_OPS phase
+    uint64_t s_total_mem_ops_active_{0}; // sum across phases that served ≥1 op
+    uint64_t s_active_mem_phases_{0};    // count of phases that served ≥1 op
 
     virtual long operate() override;
 };

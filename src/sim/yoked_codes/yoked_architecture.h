@@ -19,15 +19,11 @@
 #include <map>
 #include <vector>
 #include <queue>
-#include <unordered_set>
 
 namespace sim
 {
 namespace yoked_codes
 {
-
-constexpr int dag_sample_rate = 20;
-constexpr int dag_lookahead = 300;
 
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
@@ -56,6 +52,7 @@ class YOKED_ARCHITECTURE: public COMPUTE_BASE
     long fetch_and_execute_instructions_from_client(CLIENT*);
 
     execute_result_type do_memory_access(inst_ptr, QUBIT* ld, QUBIT* st) override;
+    execute_result_type do_placement_access(inst_ptr, QUBIT* ld, QUBIT* st, QUBIT* evict_1d) override;
 
   private:
     // Track which qubits can be used for non-Clifford operations
@@ -67,11 +64,13 @@ class YOKED_ARCHITECTURE: public COMPUTE_BASE
     YOKED_1D_STORAGE* yoked_1d_storage_ = nullptr;
 
     // Statistics for tracking 1D storage effectiveness
-    uint64_t s_1d_loads{0};   // Loads from 1D storage
-    uint64_t s_2d_loads{0};   // Loads from 2D storage
+    uint64_t s_1d_loads{0};     // Loads from 1D storage
+    uint64_t s_2d_loads{0};     // Loads from 2D storage (cold MSWAP)
+    uint64_t s_mplace_loads{0}; // Loads from 2D storage via MPLACE (includes 1D eviction)
     std::map<QUBIT*, cycle_type> qubit_1d_load_cycle_;  // Track when qubits loaded from 1D
-    uint64_t s_total_1d_to_ready_delay{0};  // Cumulative delay from 1D load to non-Clifford ready
-    uint64_t s_1d_loads_with_delay{0};  // Count of 1D loads for which delay was measured
+    uint64_t s_total_1d_to_ready_delay{0};   // Cumulative delay from 1D load to non-Clifford ready (only unverified-at-load qubits)
+    uint64_t s_1d_loads_delayed{0};          // 1D loads where verification had not yet completed at load time
+    uint64_t s_1d_loads_already_ready{0};    // 1D loads where qubit was already verified at load time
 
     void retire_instruction(CLIENT* c, inst_ptr inst, cycle_type inst_latency);
 

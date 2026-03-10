@@ -13,6 +13,8 @@
 
 #include <cstddef>
 #include <map>
+#include <queue>
+#include <unordered_set>
 
 namespace sim
 {
@@ -34,7 +36,27 @@ class YOKED_1D_STORAGE : public sim::STORAGE
 
     void set_memory_subsystem(MEMORY_SUBSYSTEM* mem_subsystem);
 
-    void feed_memory_instructions(std::vector<std::pair<size_t, INSTRUCTION*>> mem_insts, const std::vector<QUBIT*>& client_qubits);
+    /*
+     * Enqueues a batch of compiled prefetch operations, skipping any whose
+     * INSTRUCTION* is already in-flight.  Returns the count of newly enqueued
+     * (non-duplicate) entries.
+     */
+    size_t feed_prefetch_instructions(
+        std::vector<std::tuple<QUBIT*, QUBIT*, INSTRUCTION*>> prefetches);
+
+    /*
+     * Returns the MPREFETCH instructions whose operations have finished
+     * (either executed or elided as stale) since the last call.
+     * The caller should retire each returned instruction from the DAG.
+     */
+    std::vector<INSTRUCTION*> drain_completed_prefetches();
+
+    /*
+     * Performs the 1D-side swap for an MPLACE instruction.
+     * evict_1d leaves 1D storage (goes to cold); st_compute enters 1D storage (from compute).
+     * Tracks residence time correctly (evict_1d departure counted as 1D→cold).
+     */
+    access_result_type do_placement_eviction(QUBIT* evict_1d, QUBIT* st_compute);
 
     void error_stats();
 
@@ -44,8 +66,14 @@ class YOKED_1D_STORAGE : public sim::STORAGE
     const size_t yoke_cycle_rounds_;
     const size_t max_mem_rounds_;
 
-    std::map<QUBIT*, size_t> need_qubits_;  // Maps qubit to its order (layer or depth)
-    std::vector<QUBIT*> remove_qubits_;
+    // Queue of prefetch ops fed by the compute region.
+    // ld = qubit to pull from cold into 1D; st = victim to evict from 1D to cold.
+    // inst = the MPREFETCH DAG instruction whose retirement is deferred.
+    struct pending_prefetch_entry { QUBIT* ld; QUBIT* st; INSTRUCTION* inst; };
+    std::queue<pending_prefetch_entry> pending_prefetches_;
+
+    // Instructions that have completed (executed or elided); drained by the architecture.
+    std::queue<INSTRUCTION*> completed_prefetches_;
 
     // Statistics for tracking residence time (split by destination)
     std::map<QUBIT*, cycle_type> qubit_entry_cycle_;  // Track when qubits enter 1D storage
@@ -53,14 +81,12 @@ class YOKED_1D_STORAGE : public sim::STORAGE
     uint64_t s_qubits_to_compute{0};  // Count of qubits loaded to compute region
     uint64_t s_residence_time_to_2d{0};  // Cycles for qubits evicted to 2D storage
     uint64_t s_qubits_to_2d{0};  // Count of qubits evicted to 2D storage
-    
-    // Statistics for tracking needed vs unneeded qubits in 1D storage
-    double s_total_needed_percentage{0};  // Cumulative percentage of needed qubits
-    uint64_t s_cycle_samples{0};  // Number of cycles sampled
-    
-    // Statistics for feed_memory_instructions calls
-    uint64_t s_total_needed_qubits{0};  // Cumulative count of needed qubits from all feed calls
-    uint64_t s_feed_call_count{0};  // Number of times feed_memory_instructions was called
+
+    // Statistics for prefetch operations
+    uint64_t s_prefetches_received{0};  // Total prefetch MSWAPs enqueued
+    uint64_t s_prefetches_executed{0};  // Successfully executed prefetches
+    uint64_t s_prefetches_elided{0};              // Prefetches dropped as stale at execution time
+    uint64_t s_prefetches_elided_ld_in_compute{0}; // Elided because ld already reached compute
   
     enum PHASE {
         CHECK_YOKE,
@@ -75,10 +101,14 @@ class YOKED_1D_STORAGE : public sim::STORAGE
 
     virtual long operate() override;
 
+    // Instructions currently enqueued in pending_prefetches_ but not yet
+    // completed.  Used to deduplicate re-feeds from the architecture.
+    std::unordered_set<const INSTRUCTION*> inflight_prefetches_;
+
   private:
     MEMORY_SUBSYSTEM* memory_subsystem_;
 
-    void schedule_memory_operations();
+    void execute_prefetch();
 };
 
 }  // namespace sim

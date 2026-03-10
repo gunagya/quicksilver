@@ -5,7 +5,7 @@
 
 #include "sim/yoked_codes/yoked_cold_storage.h"
 #include "sim/configuration/resource_estimation.h"
-#include "sim/memory_subsystem.h"
+
 #include <cmath>
 #include <cstddef>
 #include <ios>
@@ -18,7 +18,7 @@ namespace sim
 
 namespace {
 
-constexpr int threshold = 3;
+constexpr int check_yokes_if_idol_for = 3;
 
 size_t grid_length(size_t logical_qubit_count) {
     // Grid length must be a multiple of 4. Finds the smallest multiple of 4 that suffices.
@@ -72,6 +72,7 @@ STORAGE::access_result_type YOKED_COLD_STORAGE::do_memory_access(QUBIT* ld, QUBI
         // Track the qubit loaded from cold storage (st is being stored, ld is being loaded)
         unverified_loaded_qubits_.push_back(ld);
         newly_stored_qubits_.push_back(st);
+        s_mem_ops_this_phase_++;
     }
     return result;
 }
@@ -96,8 +97,13 @@ long YOKED_COLD_STORAGE::operate() {
         }
         break;
     case MEMORY_OPS:
-        // If hallway is left available for threshold cycles, switch back to yoke check phase.
-        if (cycle_available_[0] + threshold <= current_cycle()) {
+        if (cycle_available_[0] + check_yokes_if_idol_for <= current_cycle()) {
+            // Flush this phase's op count before switching back to CHECK_YOKE.
+            if (s_mem_ops_this_phase_ > 0) {
+                s_total_mem_ops_active_ += s_mem_ops_this_phase_;
+                s_active_mem_phases_++;
+            }
+            s_mem_ops_this_phase_ = 0;
             current_phase_ = CHECK_YOKE;
             cycle_available_[0] = current_cycle() + 2;
             ro_++;
@@ -113,6 +119,13 @@ void YOKED_COLD_STORAGE::error_stats() {
     std::cout << "Per logical-qubit round error rate:" << std::scientific << (sum_rpow4_ * pow(grid_length_, 4) 
     * std::pow(150.0, -static_cast<double>(inner_code_distance_)) / 50000.0) 
     / (current_cycle() * effective_code_distance_ * ((grid_length_-2)*(grid_length_-2)-2))<<'\n';
+    if (s_active_mem_phases_ > 0) {
+        const double avg = static_cast<double>(s_total_mem_ops_active_) / s_active_mem_phases_;
+        std::cout << "Avg mem ops per active MEMORY_OPS phase: " << avg
+                  << " (over " << s_active_mem_phases_ << " non-empty phases)\n";
+    } else {
+        std::cout << "Avg mem ops per active MEMORY_OPS phase: N/A (no non-empty phases)\n";
+    }
 }
 
 } // namespace sim
