@@ -101,8 +101,14 @@ ProgramStats analyze_binary_file(const std::string& input_file, uint64_t instruc
                 stats.unrolled_instructions++;
                 break;
 
+            case INSTRUCTION::TYPE::MPLACE:
             case INSTRUCTION::TYPE::MSWAP:
                 stats.mswap_instructions++;
+                stats.unrolled_instructions++;
+                break;
+
+            case INSTRUCTION::TYPE::MPREFETCH:
+                stats.mprefetch_instructions++;
                 stats.unrolled_instructions++;
                 break;
 

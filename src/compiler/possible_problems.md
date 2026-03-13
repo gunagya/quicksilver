@@ -1,0 +1,3 @@
+1. The layer number of an instruction represents the earliest point where it might complete. Although the current layer should really consider the point that it starts.
+2. In select_eviction_candidate, why have separate arguments for candidates and exclusions? Just make it caller's responsibility to remove exclusions from candidate.
+3. Rename rri_placer files to data_placer and singlepass_prefetch to prefetcher.

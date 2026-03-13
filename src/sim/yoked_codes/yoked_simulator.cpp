@@ -135,7 +135,7 @@ main(int argc, char* argv[])
 
     if (baseline) {
         // Baseline: use standard STORAGE class
-        const int memory_block_capacity = 1000;
+        const int memory_block_capacity = 200;
         num_blocks = main_memory_qubits == 0 ? 0 : (main_memory_qubits-1) / memory_block_capacity + 1;
         memory_blocks.resize(num_blocks);
 
@@ -146,7 +146,7 @@ main(int argc, char* argv[])
                                             memory_block_capacity,
                                             MEMORY_CODE_DISTANCE,
                                             1, // num adapters
-                                            8, // load latency
+                                            6, // load latency
                                             1 // store latency
                                             );
         }

@@ -23,14 +23,14 @@ RRI_PLACER::RRI_PLACER(const rri_placer_config_type& conf, size_t num_qubits)
         compute_qubits_.insert(q);
 
     // qubits [active_set_capacity, active_set_capacity + intermediate_buffer_capacity)
-    // start in 1D intermediate storage with RRI = INF (no known reuse yet)
+    // start in 1D intermediate storage
     const qubit_type intermediate_end = static_cast<qubit_type>(
         conf.active_set_capacity + conf.intermediate_buffer_capacity);
     for (qubit_type q = static_cast<qubit_type>(conf.active_set_capacity);
          q < intermediate_end && q < static_cast<qubit_type>(num_qubits);
          q++)
     {
-        intermediate_qubits_.emplace(q, INF_RRI);
+        intermediate_qubits_.insert(q);
     }
 
     // remaining qubits are in cold storage (not tracked explicitly)

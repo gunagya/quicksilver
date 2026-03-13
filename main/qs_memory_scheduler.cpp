@@ -13,8 +13,6 @@
 #include "compiler/prefetcher/rri_placer.h"
 
 #include <chrono>
-#include <iomanip>
-#include <cstdio>
 #include <iostream>
 
 ////////////////////////////////////////////////////////////
@@ -33,6 +31,9 @@ main(int argc, char* argv[])
     bool                                   enable_rri_placer{false};
     std::string                            rri_output_file;
     compile::prefetcher::rri_placer_config_type rri_conf;
+    std::string                            rri_eviction_policy_str{"rri"};
+    std::string                            rri_layer_type_str{"unweighted"};
+    std::string                            rri_input_file;
 
     ARGPARSE()
         .required("input-file", "The trace file (without memory instructions) to compile", input_trace_file)
@@ -61,12 +62,37 @@ main(int argc, char* argv[])
         .optional("-r", "--enable-rri-placer", "Run RRI-based data placement as a second pass", enable_rri_placer, false)
         .optional("", "--rri-output-file", "Output file for RRI placer pass", rri_output_file, std::string{})
         .optional("", "--rri-intermediate-capacity", "Intermediate (1D) storage capacity for RRI placer", rri_conf.intermediate_buffer_capacity, 8)
-        .optional("", "--rri-window-size", "RRI sliding window size (layers)", rri_conf.window_size, 16)
+        .optional("", "--rri-window-size", "RRI sliding window size (layers, DEPRECATED)", rri_conf.window_size, 16)
         .optional("", "--rri-commit-zone", "RRI commit zone size (layers, must be <= window size)", rri_conf.commit_zone_size, 8)
+        .optional("", "--rri-eviction-policy", "Eviction policy for RRI placer (rri | lru)", rri_eviction_policy_str, std::string{"rri"})
+        .optional("", "--rri-layer-type", "Layer-type for pre-pass (unweighted only; weighted not yet supported for RRI placer)", rri_layer_type_str, std::string{"unweighted"})
+        .optional("", "--rri-input", "Path to MSWAP binary for pre-pass (defaults to output_trace_file)", rri_input_file, std::string{})
 
         .parse(argc, argv);
 
     // GL_USE_RPC_ISA = 1;
+
+    // Map CLI strings to enums.
+    {
+        using compile::EvictionPolicy;
+        using compile::LayerType;
+
+        // RRI placer
+        if (rri_eviction_policy_str == "rri")
+            rri_conf.eviction_policy = EvictionPolicy::RRI;
+        else if (rri_eviction_policy_str == "lru")
+            rri_conf.eviction_policy = EvictionPolicy::LRU;
+        else
+            std::cerr << "unknown rri eviction policy: " << rri_eviction_policy_str << _die{};
+
+        if (rri_layer_type_str == "unweighted")
+            rri_conf.layer_type = LayerType::UNWEIGHTED;
+        else if (rri_layer_type_str == "weighted")
+            std::cerr << "rri weighted layer type is not yet supported" << _die{};
+        else
+            std::cerr << "unknown rri layer type: " << rri_layer_type_str << _die{};
+
+    }
 
     generic_strm_type istrm, ostrm;
     generic_strm_open(istrm, input_trace_file, "rb");
@@ -74,20 +100,21 @@ main(int argc, char* argv[])
 
     compile::memory_scheduler::stats_type stats;
     auto compile_start = std::chrono::high_resolution_clock::now();
-    if (scheduler_impl_id == 0)
+    const bool skip_scheduler_pass = enable_rri_placer && !rri_input_file.empty();
+    if (skip_scheduler_pass)
+    {
+        // Intentionally skip Stage A when RRI is requested on an existing MSWAP file.
+    }
+    else if (scheduler_impl_id == 0)
         stats = run(ostrm, istrm, compile::memory_scheduler::eif, conf);
     else if (scheduler_impl_id == 1)
         stats = run(ostrm, istrm, compile::memory_scheduler::hint, conf);
-    else if (scheduler_impl_id == 2)
+    else if (scheduler_impl_id == 2 || scheduler_impl_id == 3)
     {
-        compile::memory_scheduler::SINGLEPASS_SCHEDULER sp{
-            compile::memory_scheduler::eif, conf};
-        stats = compile::memory_scheduler::singlepass_run(ostrm, istrm, sp, conf);
-    }
-    else if (scheduler_impl_id == 3)
-    {
-        compile::memory_scheduler::SINGLEPASS_SCHEDULER sp{
-            compile::memory_scheduler::hint, conf};
+        const bool use_hint = (scheduler_impl_id == 3);
+        const auto base_fn  = use_hint ? compile::memory_scheduler::hint
+                                        : compile::memory_scheduler::eif;
+        compile::memory_scheduler::SINGLEPASS_SCHEDULER sp{base_fn, conf};
         stats = compile::memory_scheduler::singlepass_run(ostrm, istrm, sp, conf);
     }
     else
@@ -199,23 +226,25 @@ main(int argc, char* argv[])
         rri_conf.dag_inst_capacity         = conf.dag_inst_capacity;
         rri_conf.verbose                   = conf.verbose;
 
-        if (rri_conf.commit_zone_size > rri_conf.window_size)
-        {
-            std::cerr << "[RRI_PLACER] commit_zone_size (" << rri_conf.commit_zone_size
-                      << ") must be <= window_size (" << rri_conf.window_size << ")" << _die{};
-        }
+        // Set input_file_path for the pre-pass.
+        if (rri_input_file.empty())
+            rri_conf.input_file_path = output_trace_file;
+        else
+            rri_conf.input_file_path = rri_input_file;
 
         // read num_qubits from the memory-scheduled output
+        const std::string rri_source_file = rri_input_file.empty() ? output_trace_file : rri_input_file;
+
         uint32_t num_qubits;
         {
             generic_strm_type tmp;
-            generic_strm_open(tmp, output_trace_file, "rb");
+            generic_strm_open(tmp, rri_source_file, "rb");
             generic_strm_read(tmp, &num_qubits, sizeof(num_qubits));
             generic_strm_close(tmp);
         }
 
         generic_strm_type r_istrm, r_ostrm;
-        generic_strm_open(r_istrm, output_trace_file, "rb");
+        generic_strm_open(r_istrm, rri_source_file, "rb");
         generic_strm_open(r_ostrm, rri_output_file, "wb");
 
         compile::prefetcher::RRI_PLACER rri_placer{rri_conf, num_qubits};
