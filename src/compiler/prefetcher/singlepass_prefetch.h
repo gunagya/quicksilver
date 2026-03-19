@@ -6,8 +6,8 @@
 #ifndef COMPILER_PREFETCHER_SINGLEPASS_PREFETCH_h
 #define COMPILER_PREFETCHER_SINGLEPASS_PREFETCH_h
 
-#include "compiler/prefetcher/prefetcher.h"
 #include "compiler/eviction_policy.h"
+#include "compiler/prefetcher/prefetcher.h"
 
 #include <deque>
 #include <string>
@@ -23,22 +23,38 @@ namespace prefetcher
 ////////////////////////////////////////////////////////////
 
 /*
+ * Victim-choice mode for singlepass prefetch:
+ *   LOCAL_DISTANCE : choose most-stale candidate by local_distance (current behavior).
+ *   LRU            : choose victim via EvictionPolicyInstance::LRU among candidates.
+ *   RRI            : choose victim via EvictionPolicyInstance::RRI among candidates.
+ * */
+enum class singlepass_prefetch_eviction_mode { LOCAL_DISTANCE, LRU, RRI };
+
+////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////
+
+/*
  * `singlepass_prefetch_config_type` extends the base prefetcher config with
  * parameters for the Stage-B MPREFETCH-insertion pass.
  *
- *   eviction_policy         : RRI (Bélády) or LRU for victim selection.
- *   layer_type              : UNWEIGHTED or WEIGHTED depth for UsageData pre-pass.
- *   input_file_path         : path to the MSWAP-only binary to pre-scan.
- *   prefetch_min_layer_distance : require a candidate victim to have local
- *                             distance >= this value before it is eligible
- *                             for eviction. 0 = disabled.
+ *   prefetch_min_layer_distance : require the selected victim candidate to
+ *                                 have local distance >= this value before
+ *                                 prefetch is emitted. 0 = disabled.
+ *   eviction_mode               : LOCAL_DISTANCE (default), LRU, or RRI.
+ *   layer_type                  : UNWEIGHTED or WEIGHTED traversal for pre-pass
+ *                                 and online layer tracking when eviction_mode
+ *                                 is LRU/RRI.
+ *   input_file_path             : binary path used for usage-data pre-pass.
+ *                                 If empty, caller should populate it with the
+ *                                 same file being transformed.
  * */
 struct singlepass_prefetch_config_type : config_type
 {
-    EvictionPolicy eviction_policy{EvictionPolicy::RRI};
-    LayerType      layer_type{LayerType::UNWEIGHTED};
-    std::string    input_file_path;
-    int64_t        prefetch_min_layer_distance{0};
+    int64_t                            prefetch_min_layer_distance{0};
+    singlepass_prefetch_eviction_mode  eviction_mode{
+        singlepass_prefetch_eviction_mode::LOCAL_DISTANCE};
+    LayerType                          layer_type{LayerType::UNWEIGHTED};
+    std::string                        input_file_path;
 };
 
 ////////////////////////////////////////////////////////////
@@ -68,14 +84,13 @@ struct sp_tracked_op_entry
  * `SINGLEPASS_PREFETCH` is a second-pass (Stage B) scheduler that reads a
  * MSWAP-annotated binary and inserts MPREFETCH instructions.
  *
- * It uses a two-pass greedy victim-selection flow backed by an
- * EvictionPolicyInstance (backed by a
- * full-circuit UsageData pre-pass) for victim selection, instead of the
- * local-distance heuristic.
- *
- * For LRU eviction: the "current layer" passed to select_eviction_candidate
- * is the absolute circuit layer of the incoming MSWAP.  Candidates with
- * last_use_at_or_before(q, mswap_layer) furthest in the past are evicted first.
+ * It uses the same two-pass greedy victim-selection logic as the in-pass
+ * singlepass memory scheduler:
+ *   - hits first (T.st == ld): consume entry, emit no prefetch
+ *   - otherwise select a victim among unconsumed candidates using either:
+ *       (a) local-distance ordering (LOCAL_DISTANCE mode), or
+ *       (b) EvictionPolicyInstance (LRU/RRI mode)
+ *     then emit MPREFETCH(ld, victim_st)
  *
  * State invariant: tracked_ops_.size() == intermediate_storage_capacity at
  * all times after construction.
@@ -85,13 +100,9 @@ struct SINGLEPASS_PREFETCH
     mutable std::deque<sp_tracked_op_entry> tracked_ops_;
     int64_t                                  intermediate_storage_capacity_;
     int64_t                                  prefetch_min_layer_distance_;
+    singlepass_prefetch_eviction_mode        eviction_mode_;
     bool                                     verbose_;
-
-    /*
-     * Eviction policy instance (populated by run_singlepass_prefetch
-     * via build_usage_data before the main loop).
-     * */
-    EvictionPolicyInstance eviction_policy_;
+    EvictionPolicyInstance                   eviction_policy_;
 
     mutable uint64_t s_prefetches_emitted_{0};
     mutable uint64_t s_prefetch_hits_{0};
@@ -109,8 +120,8 @@ struct SINGLEPASS_PREFETCH
      * Called once per front-layer MSWAP batch.
      *
      * Returns a vector of MPREFETCH instructions to emit before the MSWAPs.
-     * `mswap_layers[i]` is the absolute circuit layer of `mswaps[i]`, used as
-     * the current_layer argument for eviction queries.
+     * `mswap_layers[i]` is the absolute layer for `mswaps[i]` and is used by
+     * LRU/RRI policy modes as `current_layer`.
      * */
     std::vector<inst_ptr> operator()(const std::vector<inst_ptr>& mswaps,
                                      const std::vector<size_t>&   mswap_layers) const;
@@ -128,10 +139,8 @@ struct SINGLEPASS_PREFETCH
  * EIF/HINT) from `istrm` and inserts MPREFETCH instructions, writing the
  * result to `ostrm`.
  *
- * Before the main loop:
- *   1. Calls build_usage_data(conf.input_file_path, ...) for the pre-pass.
- *   2. Tracks a per-qubit `qubit_layer` map to assign absolute layer numbers
- *      to each MSWAP batch as it is retired.
+ * If `eviction_mode` is LRU/RRI, a pre-pass is executed via build_usage_data
+ * using `input_file_path` and `layer_type`.
  *
  * Output order per epoch: [MPREFETCH*] [MSWAP*] [compute*]
  * */

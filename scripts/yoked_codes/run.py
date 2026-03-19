@@ -1,24 +1,28 @@
 #!/usr/bin/env python3
 """
-Benchmark comparison: singlepass prefetch scheduler vs baseline EIF.
+Benchmark comparison: singlepass prefetch (second pass) vs baseline EIF.
 
 Step 1 — compile memory ops:
   For each benchmark × intermediate capacity × min-layer-distance, run
   qs_memory_scheduler with:
-    -s 0  (EIF, no prefetch)          → one output binary per benchmark
-    -s 2  (SINGLEPASS-EIF)            → one binary per (cap, mld) pair
-  Collect compile-time prefetch stats.
+    -s 0  (EIF, first pass)                               → one output binary per benchmark
+    --enable-singlepass-prefetch (second pass)            → one binary per (policy, cap, mld)
+      using:
+        --singlepass-prefetch-eviction-policy {lru|rri}
+        --singlepass-prefetch-layer-type weighted
+  Collect compile-time singlepass-prefetch stats.
 
 Step 2 — simulate:
   For the EIF binary:
     yoked_simulator ... --baseline 1 -i 0   → baseline IPC
     yoked_simulator ... -i 0                → EIF no-prefetch IPC
-  For each singlepass binary (cap × mld):
+  For each singlepass-prefetch binary (policy × cap × mld):
     yoked_simulator ... -i <cap>            → IPC, miss rate, prefetch readiness
 
 Step 3 — write CSV.
   Rows:  intermediate capacity
-  Columns: min-layer-distance variants, each carrying IPC / miss-rate / ready%.
+  Columns: min-layer-distance variants, each carrying IPC / miss-rate / ready%,
+           with eviction policy as an additional sweep dimension.
 """
 
 import subprocess
@@ -36,18 +40,22 @@ BUILD_DIR   = Path("/Users/gunagya/Desktop/Research Work/routing-space-sliding/"
 RAW_BIN_DIR = Path("/Users/gunagya/Desktop/Research Work/routing-space-sliding/"
                    "simulators/routing-simulator/deps/quicksilver/benchmarks/bin")
 MEM_DIR     = RAW_BIN_DIR / "mem"
+MEM_FIRSTPASS_DIR = MEM_DIR / "firstpass"
+MEM_SECONDPASS_PREFETCH_DIR = MEM_DIR / "secondpass" / "prefetch"
 
-COMPUTE_CAPACITIES  = [4, 8, 12, 16]   # -c / -a values to sweep
+COMPUTE_CAPACITIES  = [4]   # -c / -a values to sweep
 SIM_INSTRUCTIONS    = 1_000_000   # second positional arg to yoked_simulator
+SINGLEPASS_PREFETCH_POLICIES = ["lru", "rri"]
+SINGLEPASS_PREFETCH_LAYER_TYPE = "weighted"
 
 # For each intermediate storage size, the MLD values to sweep.
 # Edit the lists here to control which (cap, mld) pairs are compiled + simulated.
 INTERMEDIATE_MLD_MAP: dict[int, list[int]] = {
-    4:  [25, 50, 75],
-    8:  [75, 100, 125],
-    16: [150, 175, 200],
-    24: [200, 225, 250],
-    32: [250, 275, 300],
+    4:  [0, 25, 50, 75, 87, 100, 125, 150],
+    8:  [0, 75, 87, 100, 112, 125, 150],
+    16: [0, 125, 137, 150, 187, 175, 200],
+    24: [0, 150, 175, 200, 225, 250],
+    32: [0, 100, 150, 200, 250, 300],
 }
 
 # Benchmarks: (raw_binary_filename, factory_phys_qubit_budget, label)
@@ -103,11 +111,11 @@ def istat(output, key):
 
 
 def eif_mem_binary(label: str, compute_cap: int) -> Path:
-    return MEM_DIR / f"{label}_eif_c{compute_cap}.bin"
+    return MEM_FIRSTPASS_DIR / f"{label}_eif_c{compute_cap}.bin"
 
 
-def sp_mem_binary(label: str, cap: int, mld: int, compute_cap: int) -> Path:
-    return MEM_DIR / f"{label}_sp{cap}_mld{mld}_c{compute_cap}.bin"
+def sp_mem_binary(label: str, policy: str, cap: int, mld: int, compute_cap: int) -> Path:
+    return MEM_SECONDPASS_PREFETCH_DIR / f"{label}_spf_{policy}_i{cap}_mld{mld}_c{compute_cap}.bin"
 
 
 ############################################################
@@ -118,12 +126,13 @@ def compile_benchmarks(benchmarks) -> dict:
     """
     Returns compile_stats[label][compute_cap] = {
         'eif_mem_accesses': int,
-        (cap, mld): {
+        (policy, cap, mld): {
             'mem_accesses': int,
-            'prefetches_emitted': int,
+            'prefetches_emitted': int,   # SP_PREFETCH_OPERATIONS
             'prefetch_hits': int,
-            'prefetch_misses': int,
+            'prefetch_misses': int,      # SP_PREFETCH_COLD_MEMORY_ACCESSES
             'prefetch_coverage': float,
+            'prefetch_miss_rate': float,
         }
     }
     """
@@ -160,35 +169,52 @@ def compile_benchmarks(benchmarks) -> dict:
             eif_output = run(eif_cmd, f"{label} c={compute_cap}: EIF compile")
             entry["eif_mem_accesses"] = istat(eif_output, "MEMORY_ACCESSES")
 
-            # ── SINGLEPASS-EIF for each (cap, mld) pair ───────────────────────
+            if eif_output is None or not eif_out.exists():
+                print(f"[SKIP] {label} c={compute_cap}: EIF compile failed")
+                compile_stats[label][compute_cap] = entry
+                continue
+
+            # ── SINGLEPASS PREFETCH (second pass) for each (policy, cap, mld) ─
+            stage_a_dummy_out = MEM_SECONDPASS_PREFETCH_DIR / f".{label}_c{compute_cap}_stagea_dummy.bin"
             for cap, mld_list in INTERMEDIATE_MLD_MAP.items():
                 for mld in mld_list:
-                    sp_out = sp_mem_binary(label, cap, mld, compute_cap)
-                    sp_cmd = [
-                        "./qs_memory_scheduler",
-                        str(raw_path), str(sp_out),
-                        "-c", str(compute_cap),
-                        "-s", "2",
-                        "--singlepass-intermediate-capacity", str(cap),
-                        "--singlepass-min-layer-distance", str(mld),
-                        "-i", str(inst_limit),
-                        "-pp", "0",
-                    ]
-                    sp_output = run(sp_cmd, f"{label} c={compute_cap}: SINGLEPASS-EIF cap={cap} mld={mld}")
+                    for policy in SINGLEPASS_PREFETCH_POLICIES:
+                        sp_out = sp_mem_binary(label, policy, cap, mld, compute_cap)
+                        sp_cmd = [
+                            "./qs_memory_scheduler",
+                            str(raw_path), str(stage_a_dummy_out),
+                            "-c", str(compute_cap),
+                            "-s", "0",
+                            "-i", str(inst_limit),
+                            "-pp", "0",
+                            "--enable-singlepass-prefetch",
+                            "--singlepass-prefetch-input", str(eif_out),
+                            "--singlepass-prefetch-output-file", str(sp_out),
+                            "--singlepass-prefetch-intermediate-capacity", str(cap),
+                            "--singlepass-prefetch-min-layer-distance", str(mld),
+                            "--singlepass-prefetch-eviction-policy", policy,
+                            "--singlepass-prefetch-layer-type", SINGLEPASS_PREFETCH_LAYER_TYPE,
+                        ]
+                        sp_output = run(
+                            sp_cmd,
+                            f"{label} c={compute_cap}: SINGLEPASS-PREFETCH policy={policy} cap={cap} mld={mld}",
+                        )
 
-                    mem_acc   = istat(sp_output, "MEMORY_ACCESSES")
-                    pf_emit   = istat(sp_output, "PREFETCHES_EMITTED")
-                    pf_hits   = istat(sp_output, "PREFETCH_HITS")
-                    pf_misses = istat(sp_output, "PREFETCH_MISSES")
-                    pf_cov    = fstat(sp_output, "PREFETCH_COVERAGE")
+                        mem_acc      = istat(sp_output, "MEMORY_ACCESSES")
+                        sp_ops       = istat(sp_output, "SP_PREFETCH_OPERATIONS")
+                        sp_hits      = istat(sp_output, "SP_PREFETCH_HITS")
+                        sp_cold      = istat(sp_output, "SP_PREFETCH_COLD_MEMORY_ACCESSES")
+                        sp_miss_rate = fstat(sp_output, "SP_PREFETCH_MISS_RATE")
+                        pf_cov       = (1.0 - sp_miss_rate) if sp_miss_rate is not None else None
 
-                    entry[(cap, mld)] = {
-                        "mem_accesses":       mem_acc,
-                        "prefetches_emitted": pf_emit,
-                        "prefetch_hits":      pf_hits,
-                        "prefetch_misses":    pf_misses,
-                        "prefetch_coverage":  pf_cov,
-                    }
+                        entry[(policy, cap, mld)] = {
+                            "mem_accesses":       mem_acc,
+                            "prefetches_emitted": sp_ops,
+                            "prefetch_hits":      sp_hits,
+                            "prefetch_misses":    sp_cold,
+                            "prefetch_coverage":  pf_cov,
+                            "prefetch_miss_rate": sp_miss_rate,
+                        }
 
             compile_stats[label][compute_cap] = entry
 
@@ -262,53 +288,63 @@ def simulate_benchmarks(benchmarks, compile_stats) -> list[dict]:
                 "prefetch_ready_on_load_pct": None,
             })
 
-            # ── SINGLEPASS variants ───────────────────────────────────────────
+            # ── SINGLEPASS PREFETCH variants ──────────────────────────────────
             for cap, mld_list in INTERMEDIATE_MLD_MAP.items():
                 for mld in mld_list:
-                    sp_bin = sp_mem_binary(label, cap, mld, compute_cap)
-                    if not sp_bin.exists():
-                        print(f"[SKIP SIM] {label} c={compute_cap} cap={cap} mld={mld}: singlepass binary missing")
-                        continue
+                    for policy in SINGLEPASS_PREFETCH_POLICIES:
+                        sp_bin = sp_mem_binary(label, policy, cap, mld, compute_cap)
+                        if not sp_bin.exists():
+                            print(
+                                f"[SKIP SIM] {label} c={compute_cap} policy={policy} cap={cap} mld={mld}: "
+                                "singlepass prefetch binary missing"
+                            )
+                            continue
 
-                    sp_sim_out = run(
-                        ["./yoked_simulator", str(sp_bin)] + common_sim + ["-i", str(cap)],
-                        f"{label} c={compute_cap}: SINGLEPASS sim cap={cap} mld={mld}",
-                    )
+                        sp_sim_out = run(
+                            ["./yoked_simulator", str(sp_bin)] + common_sim + ["-i", str(cap)],
+                            f"{label} c={compute_cap}: SINGLEPASS-PREFETCH sim policy={policy} cap={cap} mld={mld}",
+                        )
 
-                    sp_ipc       = fstat(sp_sim_out, "IPC")
-                    sp_mem_qub   = istat(sp_sim_out, "MEMORY_PHYSICAL_QUBITS")
-                    sp_miss_rate = fstat(sp_sim_out, "Miss rate")
+                        sp_ipc       = fstat(sp_sim_out, "IPC")
+                        sp_mem_qub   = istat(sp_sim_out, "MEMORY_PHYSICAL_QUBITS")
+                        sp_miss_rate = fstat(sp_sim_out, "Miss rate")
 
-                    # Prefetch readiness: % of 1D loads already verified at load time
-                    loads_ready   = istat(sp_sim_out, "1D loads: already verified at load time")
-                    loads_delayed = istat(sp_sim_out, "1D loads: needed to wait for verification")
-                    if loads_ready is not None and loads_delayed is not None:
-                        total_1d = loads_ready + loads_delayed
-                        pf_ready_pct = (100.0 * loads_ready / total_1d) if total_1d > 0 else None
-                    else:
-                        pf_ready_pct = None
+                        # Prefetch readiness: % of 1D loads already verified at load time
+                        loads_ready   = istat(sp_sim_out, "1D loads: already verified at load time")
+                        loads_delayed = istat(sp_sim_out, "1D loads: needed to wait for verification")
+                        if loads_ready is not None and loads_delayed is not None:
+                            total_1d = loads_ready + loads_delayed
+                            pf_ready_pct = (100.0 * loads_ready / total_1d) if total_1d > 0 else None
+                        else:
+                            pf_ready_pct = None
 
-                    cap_compile = compile_stats[label][compute_cap].get((cap, mld), {})
+                        cap_compile = compile_stats[label][compute_cap].get((policy, cap, mld), {})
 
-                    rows.append({
-                        "benchmark":              label,
-                        "raw_file":               raw_file,
-                        "compute_capacity":       compute_cap,
-                        "sim_instructions":       SIM_INSTRUCTIONS,
-                        "scheduler":              "singlepass_eif",
-                        "intermediate_capacity":  cap,
-                        "min_layer_distance":     mld,
-                        # compile stats
-                        "compile_mem_accesses":      cap_compile.get("mem_accesses"),
-                        "compile_prefetch_coverage": cap_compile.get("prefetch_coverage"),
-                        # sim stats
-                        "baseline_ipc":             baseline_ipc,
-                        "baseline_mem_phys_qubits": baseline_mem_qub,
-                        "ipc":                      sp_ipc,
-                        "mem_phys_qubits":          sp_mem_qub,
-                        "sim_miss_rate_pct":        sp_miss_rate,
-                        "prefetch_ready_on_load_pct": pf_ready_pct,
-                    })
+                        rows.append({
+                            "benchmark":              label,
+                            "raw_file":               raw_file,
+                            "compute_capacity":       compute_cap,
+                            "sim_instructions":       SIM_INSTRUCTIONS,
+                            "scheduler":              "singlepass_prefetch",
+                            "eviction_policy":        policy,
+                            "layer_type":             SINGLEPASS_PREFETCH_LAYER_TYPE,
+                            "intermediate_capacity":  cap,
+                            "min_layer_distance":     mld,
+                            # compile stats
+                            "compile_mem_accesses":        cap_compile.get("mem_accesses"),
+                            "compile_prefetch_ops":        cap_compile.get("prefetches_emitted"),
+                            "compile_prefetch_hits":       cap_compile.get("prefetch_hits"),
+                            "compile_prefetch_misses":     cap_compile.get("prefetch_misses"),
+                            "compile_prefetch_coverage":   cap_compile.get("prefetch_coverage"),
+                            "compile_prefetch_miss_rate":  cap_compile.get("prefetch_miss_rate"),
+                            # sim stats
+                            "baseline_ipc":             baseline_ipc,
+                            "baseline_mem_phys_qubits": baseline_mem_qub,
+                            "ipc":                      sp_ipc,
+                            "mem_phys_qubits":          sp_mem_qub,
+                            "sim_miss_rate_pct":        sp_miss_rate,
+                            "prefetch_ready_on_load_pct": pf_ready_pct,
+                        })
 
     return rows
 
@@ -323,11 +359,17 @@ FIELDNAMES = [
     "compute_capacity",
     "sim_instructions",
     "scheduler",
+    "eviction_policy",
+    "layer_type",
     "intermediate_capacity",
     "min_layer_distance",
     # compile
     "compile_mem_accesses",
+    "compile_prefetch_ops",
+    "compile_prefetch_hits",
+    "compile_prefetch_misses",
     "compile_prefetch_coverage",
+    "compile_prefetch_miss_rate",
     # sim
     "baseline_ipc",
     "baseline_mem_phys_qubits",
@@ -349,7 +391,7 @@ def write_csv(rows: list[dict], path: Path):
 def print_summary(rows: list[dict]):
     """Print a compact summary table grouped by benchmark."""
     print("\n" + "=" * 140)
-    print(f"{'Benchmark':<22} {'Sched':<16} {'Cmpt':>4} {'Cap':>4} {'MLD':>4}  "
+    print(f"{'Benchmark':<22} {'Sched':<18} {'Policy':<5} {'Cmpt':>4} {'Cap':>4} {'MLD':>4}  "
           f"{'CmpCov%':>8}  {'IPC':>8}  {'MemQub':>8}  "
           f"{'MissRt%':>8}  {'PfReady%':>9}")
     print("-" * 140)
@@ -360,7 +402,7 @@ def print_summary(rows: list[dict]):
         mq_s  = str(r.get("mem_phys_qubits") or "—")
         mr_s  = f"{r['sim_miss_rate_pct']:.1f}" if r.get("sim_miss_rate_pct") is not None else "—"
         pr_s  = f"{r['prefetch_ready_on_load_pct']:.1f}" if r.get("prefetch_ready_on_load_pct") is not None else "—"
-        print(f"{r['benchmark']:<22} {r['scheduler']:<16} {r['compute_capacity']:>4} "
+        print(f"{r['benchmark']:<22} {r['scheduler']:<18} {r.get('eviction_policy', '—'):<5} {r['compute_capacity']:>4} "
               f"{r['intermediate_capacity']:>4} {r['min_layer_distance']:>4}  "
               f"{cov_s:>8}  {ipc_s:>8}  {mq_s:>8}  {mr_s:>8}  {pr_s:>9}")
     print("=" * 140)
@@ -373,6 +415,8 @@ def print_summary(rows: list[dict]):
 def main():
     os.chdir(BUILD_DIR)
     MEM_DIR.mkdir(parents=True, exist_ok=True)
+    MEM_FIRSTPASS_DIR.mkdir(parents=True, exist_ok=True)
+    MEM_SECONDPASS_PREFETCH_DIR.mkdir(parents=True, exist_ok=True)
 
     compile_stats = compile_benchmarks(BENCHMARKS)
     rows = simulate_benchmarks(BENCHMARKS, compile_stats)

@@ -22,6 +22,7 @@ namespace prefetcher
 SINGLEPASS_PREFETCH::SINGLEPASS_PREFETCH(const singlepass_prefetch_config_type& conf)
     : intermediate_storage_capacity_(conf.intermediate_buffer_capacity),
       prefetch_min_layer_distance_(conf.prefetch_min_layer_distance),
+      eviction_mode_(conf.eviction_mode),
       verbose_(conf.verbose)
 {
     // Initialize one dummy universal entry per intermediate qubit slot.
@@ -86,7 +87,7 @@ SINGLEPASS_PREFETCH::observe_compute_instructions(const std::vector<inst_ptr>& i
 
 std::vector<inst_ptr>
 SINGLEPASS_PREFETCH::operator()(const std::vector<inst_ptr>& mswaps,
-                                 const std::vector<size_t>&   mswap_layers) const
+                                const std::vector<size_t>&   mswap_layers) const
 {
     assert(mswap_layers.size() == mswaps.size());
 
@@ -159,11 +160,16 @@ SINGLEPASS_PREFETCH::operator()(const std::vector<inst_ptr>& mswaps,
             }
         }
 
+        std::stable_sort(e.candidates.begin(), e.candidates.end(),
+                         [](const candidate_info& a, const candidate_info& b) {
+                             return a.local_distance > b.local_distance;
+                         });
+
         entries.push_back(std::move(e));
     }
 
     // -------------------------------------------------------
-    // Pass 2: assign victims using the eviction policy.
+    // Pass 2: assign victims. Hits first, then prefetches.
     // -------------------------------------------------------
     std::vector<bool>     consumed(num_tracked, false);
     std::vector<inst_ptr> prefetch_accesses;
@@ -189,63 +195,103 @@ SINGLEPASS_PREFETCH::operator()(const std::vector<inst_ptr>& mswaps,
         if (e.is_hit)
             continue;
 
-        // Collect unconsumed candidate qubit_types for the eviction policy.
-        // Also build an ordered list (most stale first) for the LRU fallback
-        // based on local_distance.
-        std::vector<qubit_type>    cand_qubits;
-        std::vector<candidate_info> sorted_cands = e.candidates;
-        std::stable_sort(sorted_cands.begin(), sorted_cands.end(),
-            [](const candidate_info& a, const candidate_info& b) {
-                return a.local_distance > b.local_distance;
-            });
+        size_t victim_idx      = SIZE_MAX;
+        size_t victim_distance = 0;
 
-        for (const auto& c : sorted_cands)
+        if (eviction_mode_ == singlepass_prefetch_eviction_mode::LOCAL_DISTANCE)
         {
-            if (consumed[c.idx])
-                continue;
-            if (prefetch_min_layer_distance_ > 0
-                && c.local_distance != SIZE_MAX
-                && static_cast<int64_t>(c.local_distance) < prefetch_min_layer_distance_)
+            // Pick most-stale unconsumed candidate (candidates are pre-sorted).
+            for (const auto& c : e.candidates)
             {
-                continue;
-            }
-            cand_qubits.push_back(tracked_ops_[c.idx].st);
-        }
-
-        if (cand_qubits.empty())
-        {
-            s_prefetch_misses_++;
-            if (verbose_)
-                std::cout << "[SP_PREFETCH] cold miss for MSWAP(ld=" << e.ld
-                          << ", st=" << e.st << "): no eligible candidates\n";
-            continue;
-        }
-
-        // Use the eviction policy to pick the best victim.
-        // For RRI: argmax next_use_after(q, e.layer).
-        // For LRU: argmin last_use_at_or_before(q, e.layer).
-        auto evict_result = eviction_policy_.select_eviction_candidate(
-            cand_qubits, e.layer, {});
-
-        size_t victim_idx = SIZE_MAX;
-        if (evict_result.found)
-        {
-            // Locate the tracked_ops_ index for the selected qubit.
-            for (const auto& c : sorted_cands)
-            {
-                if (!consumed[c.idx]
-                    && tracked_ops_[c.idx].st == evict_result.qubit)
+                if (!consumed[c.idx])
                 {
-                    victim_idx = c.idx;
+                    victim_idx      = c.idx;
+                    victim_distance = c.local_distance;
                     break;
                 }
             }
-        }
 
-        if (victim_idx == SIZE_MAX)
+            if (victim_idx == SIZE_MAX)
+            {
+                s_prefetch_misses_++;
+                if (verbose_)
+                    std::cout << "[SP_PREFETCH] cold miss for MSWAP(ld=" << e.ld
+                              << ", st=" << e.st << "): no candidate available\n";
+                continue;
+            }
+
+            if (prefetch_min_layer_distance_ > 0 && victim_distance != SIZE_MAX)
+            {
+                if (static_cast<int64_t>(victim_distance) < prefetch_min_layer_distance_)
+                {
+                    s_prefetch_misses_++;
+                    if (verbose_)
+                        std::cout << "[SP_PREFETCH] suppressed prefetch for MSWAP(ld=" << e.ld
+                                  << ", st=" << e.st << "): local distance " << victim_distance
+                                  << " < threshold " << prefetch_min_layer_distance_ << "\n";
+                    continue;
+                }
+            }
+        }
+        else
         {
-            s_prefetch_misses_++;
-            continue;
+            std::vector<candidate_info> policy_eligible;
+            std::vector<qubit_type>     policy_candidates;
+            policy_eligible.reserve(e.candidates.size());
+            policy_candidates.reserve(e.candidates.size());
+
+            for (const auto& c : e.candidates)
+            {
+                if (consumed[c.idx])
+                    continue;
+                if (prefetch_min_layer_distance_ > 0
+                    && c.local_distance != SIZE_MAX
+                    && static_cast<int64_t>(c.local_distance) < prefetch_min_layer_distance_)
+                {
+                    continue;
+                }
+                policy_eligible.push_back(c);
+                policy_candidates.push_back(tracked_ops_[c.idx].st);
+            }
+
+            if (policy_candidates.empty())
+            {
+                s_prefetch_misses_++;
+                if (verbose_)
+                    std::cout << "[SP_PREFETCH] cold miss for MSWAP(ld=" << e.ld
+                              << ", st=" << e.st << "): no eligible candidates\n";
+                continue;
+            }
+
+            auto evict_result = eviction_policy_.select_eviction_candidate(
+                policy_candidates, e.layer, {});
+            if (!evict_result.found)
+            {
+                s_prefetch_misses_++;
+                if (verbose_)
+                    std::cout << "[SP_PREFETCH] cold miss for MSWAP(ld=" << e.ld
+                              << ", st=" << e.st << "): policy found no victim\n";
+                continue;
+            }
+
+            for (const auto& c : policy_eligible)
+            {
+                if (tracked_ops_[c.idx].st == evict_result.qubit)
+                {
+                    victim_idx      = c.idx;
+                    victim_distance = c.local_distance;
+                    break;
+                }
+            }
+
+            if (victim_idx == SIZE_MAX)
+            {
+                s_prefetch_misses_++;
+                if (verbose_)
+                    std::cout << "[SP_PREFETCH] cold miss for MSWAP(ld=" << e.ld
+                              << ", st=" << e.st << "): selected victim not found\n";
+                continue;
+            }
         }
 
         consumed[victim_idx] = true;
@@ -298,6 +344,7 @@ void
 SINGLEPASS_PREFETCH::collect_stats(stats_type& stats) const
 {
     stats.prefetch_operations = s_prefetches_emitted_;
+    stats.prefetch_hits = s_prefetch_hits_;
     stats.cold_memory_accesses = s_prefetch_misses_;
 }
 

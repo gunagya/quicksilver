@@ -55,6 +55,7 @@ struct stats_type
     uint64_t unrolled_inst_done{0};
     uint64_t layers_processed{0};
     uint64_t prefetch_operations{0};
+    uint64_t prefetch_hits{0};
     uint64_t cold_memory_accesses{0};
 };
 

@@ -22,9 +22,8 @@ namespace prefetcher
  * from `istrm`, inserts MPREFETCH instructions, and writes the result to
  * `ostrm`.
  *
- * Before the main loop, if conf.input_file_path is non-empty, a full-circuit
- * pre-pass (build_usage_data) is performed on that file to populate the
- * scheduler's eviction policy.
+ * For LRU/RRI eviction modes, builds usage-data from `conf.input_file_path`
+ * using `conf.layer_type` before the main run loop.
  *
  * Per front-layer retirement order:
  *   [MPREFETCH*]  prefetch instructions for the MSWAP batch
@@ -39,12 +38,16 @@ run_singlepass_prefetch(generic_strm_type&                     ostrm,
 {
     constexpr size_t OUTGOING_CAPACITY{16384};
 
-    // --------------------------------------------------------
-    // Pre-pass: build full-circuit UsageData from the input file.
-    // --------------------------------------------------------
-    if (!conf.input_file_path.empty())
+    if (conf.eviction_mode != singlepass_prefetch_eviction_mode::LOCAL_DISTANCE)
     {
-        scheduler.eviction_policy_.policy     = conf.eviction_policy;
+        if (conf.input_file_path.empty())
+            std::cerr << "singlepass_prefetch: input_file_path is required for LRU/RRI mode"
+                      << _die{};
+
+        scheduler.eviction_policy_.policy =
+            (conf.eviction_mode == singlepass_prefetch_eviction_mode::RRI)
+                ? EvictionPolicy::RRI
+                : EvictionPolicy::LRU;
         scheduler.eviction_policy_.usage_data = build_usage_data(
             conf.input_file_path,
             conf.layer_type,
@@ -63,8 +66,8 @@ run_singlepass_prefetch(generic_strm_type&                     ostrm,
     outgoing_buffer.reserve(OUTGOING_CAPACITY);
 
     int64_t inst_done{0};
-    size_t  front_layer_counter{0};  // UNWEIGHTED layer index used for UsageData queries
-    std::unordered_map<qubit_type, size_t> qubit_layer;  // WEIGHTED per-qubit layer map
+    size_t front_layer_counter{0};
+    std::unordered_map<qubit_type, size_t> qubit_layer;
 
     while (inst_done < conf.inst_compile_limit)
     {
@@ -79,10 +82,7 @@ run_singlepass_prefetch(generic_strm_type&                     ostrm,
 
         // --------------------------------------------------------
         // Separate front layer into MSWAPs and compute instructions.
-        // Also compute absolute layer for each instruction:
-        //   UNWEIGHTED: front_layer_counter
-        //   WEIGHTED  : max(qubit_layer[q]) + instruction_depth_weight(type)
-        // matching build_usage_data().
+        // Compute absolute layer per instruction according to conf.layer_type.
         // --------------------------------------------------------
         std::vector<inst_ptr> mswaps;
         std::vector<size_t>   mswap_layers;
@@ -95,7 +95,7 @@ run_singlepass_prefetch(generic_strm_type&                     ostrm,
             {
                 inst_layer = front_layer_counter;
             }
-            else  // WEIGHTED
+            else  // LayerType::WEIGHTED
             {
                 size_t max_pred = 0;
                 for (auto it = inst->q_begin(); it != inst->q_end(); ++it)
@@ -127,7 +127,7 @@ run_singlepass_prefetch(generic_strm_type&                     ostrm,
         }
 
         // --------------------------------------------------------
-        // Emit MPREFETCHes for this MSWAP batch using per-MSWAP absolute layers.
+        // Emit MPREFETCHes for this MSWAP batch.
         // --------------------------------------------------------
         std::vector<inst_ptr> prefetches;
         if (!mswaps.empty())
