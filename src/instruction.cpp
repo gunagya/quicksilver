@@ -32,42 +32,54 @@ constexpr size_t NUM_CCX_UOPS{NUM_CCZ_UOPS+2};
  * */
 struct io_encoding
 {
-    constexpr static size_t MAX_QUBITS{INSTRUCTION::MAX_QUBITS};
-    constexpr static size_t UROTSEQ_CAPACITY{512};
+    constexpr static size_t UROTSEQ_CAPACITY{256};
     constexpr static size_t MAX_CORR_UROTSEQ{4};
 
     using fpa_type = INSTRUCTION::fpa_type;
 
-    uint8_t             type_id{0};
-    qubit_type          qubits[MAX_QUBITS]{-1,-1,-1};
+    /*
+     * Instruction type representation
+     * */
+    uint8_t type_id{0};
+
+    /*
+     * Operand data:
+     * */
+    uint8_t                 qubit_count{0};
+    std::vector<qubit_type> qubits{0,0,0};
+
+    /*
+     * For rotation gates only:
+     * */
     uint16_t            fpa_word_count{fpa_type::NUM_WORDS};  // needed in case `FPA_PRECISION` changes
     fpa_type::word_type angle[fpa_type::NUM_WORDS];
 
-    uint32_t urotseq_size;
+    uint16_t urotseq_size;
     uint8_t  urotseq[UROTSEQ_CAPACITY];
 
     uint8_t  corr_urotseq_count{0};
-    uint32_t corr_urotseq_sizes[MAX_CORR_UROTSEQ];
+    uint16_t corr_urotseq_sizes[MAX_CORR_UROTSEQ];
     uint8_t  corr_urotseq[MAX_CORR_UROTSEQ][UROTSEQ_CAPACITY];
-
 };
 
-INSTRUCTION::urotseq_type _retrieve_urotseq_from_encoded_data(uint32_t size, uint8_t*);
-void                      _write_urotseq_to_encoded_data(uint32_t& size, uint8_t*, const INSTRUCTION::urotseq_type&);
+INSTRUCTION::urotseq_type _retrieve_urotseq_from_encoded_data(uint16_t size, uint8_t*);
+void                      _write_urotseq_to_encoded_data(uint16_t& size, uint8_t*, const INSTRUCTION::urotseq_type&);
 
 /*
  * `_fill_or_consume_serialized_instruction` either sets the data in `io_encoding` (if using an input stream),
  *  or writes its data to a file (output stream)
+ *
+ *  Returns true on EOF.
  * */
 template <class IO_FUNCTION>
-void _fill_or_consume_serialized_instruction(io_encoding&, generic_strm_type&, const IO_FUNCTION&);
+bool _fill_or_consume_serialized_instruction(io_encoding&, generic_strm_type&, const IO_FUNCTION&);
 
 /*
  * Function for writing or reading a unrolled rotation sequence. This is a helper for
  * `_fill_or_consume_serialized_instruction()`
  * */
 template <class IO_FUNCTION>
-void _fill_or_consume_urotseq(generic_strm_type&, uint32_t*, uint8_t*, const IO_FUNCTION&);
+void _fill_or_consume_urotseq(generic_strm_type&, uint16_t*, uint8_t*, const IO_FUNCTION&);
 
 }  // anon namespace
 
@@ -80,6 +92,29 @@ INSTRUCTION::INSTRUCTION(TYPE _type, std::initializer_list<qubit_type> _qubits)
     angle{},
     urotseq{},
     qubit_count{get_inst_qubit_count(_type)}
+{
+    assert(get_inst_qubit_count(_type) == 0
+           || (ptrdiff_t)_qubits.size() == (ptrdiff_t)get_inst_qubit_count(_type));
+}
+
+INSTRUCTION::INSTRUCTION(const INSTRUCTION& other)
+    :type(other.type),
+    qubits(other.qubits),
+    angle(other.angle),
+    urotseq(other.urotseq),
+    corr_urotseq_array(other.corr_urotseq_array),
+    qubit_count(other.qubit_count),
+    number(other.number),
+    cycle_done(other.cycle_done),
+    deletable(other.deletable),
+    first_ready_cycle(other.first_ready_cycle),
+    first_ready_cycle_for_current_uop(other.first_ready_cycle_for_current_uop),
+    first_cycle_with_all_load_results_available(other.first_cycle_with_all_load_results_available),
+    first_cycle_with_available_resource_state(other.first_cycle_with_available_resource_state),
+    original_unrolled_inst_count(other.original_unrolled_inst_count),
+    rdr_has_been_visited(other.rdr_has_been_visited),
+    current_uop_(other.current_uop_ ? new INSTRUCTION(*other.current_uop_) : nullptr),
+    uops_retired_(other.uops_retired_)
 {}
 
 INSTRUCTION::~INSTRUCTION()
@@ -256,11 +291,13 @@ INSTRUCTION*
 read_instruction_from_stream(generic_strm_type& istrm)
 {
     io_encoding enc;
-    _fill_or_consume_serialized_instruction(enc, istrm, generic_strm_read);
+    bool eof = _fill_or_consume_serialized_instruction(enc, istrm, generic_strm_read);
+    if (eof)
+        return nullptr;
 
     INSTRUCTION::TYPE         type = static_cast<INSTRUCTION::TYPE>(enc.type_id);
-    auto                      q_begin = std::begin(enc.qubits);
-    auto                      q_end = q_begin + get_inst_qubit_count(type);
+    auto                      q_begin = enc.qubits.begin();
+    auto                      q_end   = enc.qubits.end();
     INSTRUCTION::fpa_type     angle(std::begin(enc.angle), std::end(enc.angle));
     INSTRUCTION::urotseq_type urotseq;
 
@@ -291,7 +328,8 @@ write_instruction_to_stream(generic_strm_type& ostrm, const INSTRUCTION* inst)
     enc.type_id = static_cast<uint8_t>(inst->type);
 
     // qubits
-    std::copy(inst->q_begin(), inst->q_end(), std::begin(enc.qubits));
+    enc.qubits.assign(inst->q_begin(), inst->q_end());
+    enc.qubit_count = static_cast<uint8_t>(enc.qubits.size());
 
     // angle:
     auto words = inst->angle.get_words();
@@ -323,7 +361,7 @@ namespace
 ////////////////////////////////////////////////////////////
 
 INSTRUCTION::urotseq_type
-_retrieve_urotseq_from_encoded_data(uint32_t size, uint8_t* data)
+_retrieve_urotseq_from_encoded_data(uint16_t size, uint8_t* data)
 {
     INSTRUCTION::urotseq_type out(size);
     std::transform(data, data+size, out.begin(), [] (auto t) { return static_cast<INSTRUCTION::TYPE>(t); });
@@ -331,7 +369,7 @@ _retrieve_urotseq_from_encoded_data(uint32_t size, uint8_t* data)
 }
 
 void
-_write_urotseq_to_encoded_data(uint32_t& size, uint8_t* data, const INSTRUCTION::urotseq_type& urotseq)
+_write_urotseq_to_encoded_data(uint16_t& size, uint8_t* data, const INSTRUCTION::urotseq_type& urotseq)
 {
     size = urotseq.size();
     std::transform(urotseq.begin(), urotseq.end(), data, [] (auto t) { return static_cast<uint8_t>(t); });
@@ -340,21 +378,30 @@ _write_urotseq_to_encoded_data(uint32_t& size, uint8_t* data, const INSTRUCTION:
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
 
-template <class IO_FUNCTION> void
+template <class IO_FUNCTION> bool
 _fill_or_consume_serialized_instruction(io_encoding& enc, generic_strm_type& strm, const IO_FUNCTION& io_fn)
 {
     constexpr uint8_t RZ_TYPE_ID = static_cast<uint8_t>(INSTRUCTION::TYPE::RZ),
                       RX_TYPE_ID = static_cast<uint8_t>(INSTRUCTION::TYPE::RX);
 
     io_fn(strm, &enc.type_id, sizeof(enc.type_id));
-    io_fn(strm, &enc.qubits, sizeof(qubit_type)*io_encoding::MAX_QUBITS);
+
+    if (generic_strm_eof(strm))
+        return true;
+
+    io_fn(strm, &enc.qubit_count, sizeof(enc.qubit_count));
+    enc.qubits.resize(enc.qubit_count);
+    io_fn(strm, enc.qubits.data(), sizeof(qubit_type) * enc.qubit_count);
 
     if (enc.type_id == RZ_TYPE_ID || enc.type_id == RX_TYPE_ID)
     {
         // angle data
         io_fn(strm, &enc.fpa_word_count, sizeof(enc.fpa_word_count));
         assert(enc.fpa_word_count <= io_encoding::fpa_type::NUM_WORDS);
-        io_fn(strm, enc.angle, sizeof(io_encoding::fpa_type::word_type) * enc.fpa_word_count);
+
+        size_t offset = io_encoding::fpa_type::NUM_WORDS-enc.fpa_word_count;
+        std::fill(enc.angle, enc.angle+offset, io_encoding::fpa_type::word_type{0});
+        io_fn(strm, enc.angle+offset, sizeof(io_encoding::fpa_type::word_type) * enc.fpa_word_count);
 
         // rotation sequence
         _fill_or_consume_urotseq(strm, &enc.urotseq_size, enc.urotseq, io_fn);
@@ -368,15 +415,17 @@ _fill_or_consume_serialized_instruction(io_encoding& enc, generic_strm_type& str
                 _fill_or_consume_urotseq(strm, enc.corr_urotseq_sizes+i, enc.corr_urotseq[i], io_fn);
         }
     }
+
+    return false;
 }
 
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
 
 template <class IO_FUNCTION> void
-_fill_or_consume_urotseq(generic_strm_type& strm, uint32_t* size_p, uint8_t* urotseq, const IO_FUNCTION& io_fn)
+_fill_or_consume_urotseq(generic_strm_type& strm, uint16_t* size_p, uint8_t* urotseq, const IO_FUNCTION& io_fn)
 {
-    io_fn(strm, size_p, sizeof(uint32_t));
+    io_fn(strm, size_p, sizeof(uint16_t));
     assert(*size_p <= io_encoding::UROTSEQ_CAPACITY);
     io_fn(strm, urotseq, sizeof(uint8_t)*(*size_p));
 }

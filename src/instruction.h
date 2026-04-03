@@ -136,18 +136,19 @@ public:
      *  `first_ready_cycle` is useful for computing instruction latency
      *  `original_unrolled_inst_count` is useful for rotation instructions as `urotseq` may be modified
      * */
-    bool     deletable{false};
+    bool deletable{false};
     uint64_t first_ready_cycle{std::numeric_limits<uint64_t>::max()};
+
+    std::optional<cycle_type> first_ready_cycle_for_current_uop{};
+    std::optional<cycle_type> first_cycle_with_all_load_results_available{};
+    std::optional<cycle_type> first_cycle_with_available_resource_state{};
+
     uint64_t original_unrolled_inst_count{};
 
-    /*
-     * `rpc_*` variables correspond to variables used for
-     * rotation precomputation. 
-     *
-     * `rpc_has_been_visited` is used to track whether this
-     * is the first time a given instruction has been seen.
-     * */
-    bool rpc_has_been_visited{false};
+    /* Rotation-Directed Runahead state variables */
+
+    bool rdr_is_pending{false};
+    bool rdr_has_been_visited{false};
 private:
     /*
      * Gates like RZ and RX have micro-ops (or uops) that must be execute
@@ -181,7 +182,7 @@ public:
     template <class Q_IT_TYPE, class U_IT_TYPE>
     INSTRUCTION(TYPE, Q_IT_TYPE q_begin, Q_IT_TYPE q_end, fpa_type, U_IT_TYPE urotseq_begin, U_IT_TYPE urotseq_end);
 
-    INSTRUCTION(const INSTRUCTION&) =default;
+    INSTRUCTION(const INSTRUCTION&);
 
     ~INSTRUCTION();
 
@@ -255,11 +256,16 @@ constexpr bool is_toffoli_like_instruction(INSTRUCTION::TYPE);
 
 /*
  * Returns the DAG depth weight for an instruction type.
- * Matches the scoring used by DAG::get_memory_instructions_upto_depth:
- *   rotation  → 20,  toffoli-like → 10,  memory → 5,  cx-like → 2,
- *   software  →  0,  everything else → 1
+ * Type-only weighting is used when no concrete instruction instance is available.
  * */
 constexpr size_t instruction_depth_weight(INSTRUCTION::TYPE);
+
+/*
+ * Returns the DAG depth weight for a concrete instruction.
+ * Rotation instructions are weighted by their nonzero uop_count();
+ * all other instructions fall back to the type-based weighting above.
+ * */
+size_t instruction_depth_weight(const INSTRUCTION&);
 
 /*
  * This function is a constexpr function that returns

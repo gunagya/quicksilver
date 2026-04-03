@@ -111,13 +111,22 @@ std::map<size_t, OptimalBlock> precompute_optimal_blocks(
     bool only_2d = false,
     bool verbose = true);
 
-// Dynamic programming to find optimal memory configuration
-// Returns pair of (unconstrained_optimal, 1d_constrained_optimal)
+// Dynamic programming to find optimal memory configuration.
+// Returns pair of (unconstrained_optimal, min_1d_size_constrained_optimal).
 std::pair<DPState, DPState> find_optimal_config_dp(
     size_t target_logical_qubits,
     const std::map<size_t, OptimalBlock>& optimal_blocks,
-    bool require_1d_block = false,
+    size_t min_1d_size = 0,
     bool verbose = true);
+
+// Compute the best physical-qubit count for every target logical-qubit count in
+// [0, max_target_logical_qubits], allowing the same overshoot policy as
+// optimize_memory_config().
+std::vector<size_t> optimal_physical_qubits_by_target(
+    size_t max_target_logical_qubits,
+    const std::map<size_t, OptimalBlock>& optimal_blocks,
+    size_t min_1d_size = 0,
+    bool verbose = false);
 
 // Print configuration details
 void print_config(const DPState& config, size_t effective_code_distance, double target_error_rate);
@@ -126,13 +135,14 @@ void print_config(const DPState& config, size_t effective_code_distance, double 
 // High-level API
 ////////////////////////////////////////////////////////////
 
-// Find optimal memory configuration for given parameters
-// Returns the optimal configuration (with 1D constraint if require_1d_block=true)
+// Find optimal memory configuration for given parameters.
+// If min_1d_size > 0, require at least one 1D block with logical size >= min_1d_size.
+// If only_2d is true, only 2D blocks are considered.
 DPState optimize_memory_config(
     size_t target_logical_qubits,
     double target_error_rate,
     size_t effective_code_distance,
-    bool require_1d_block = false,
+    size_t min_1d_size = 0,
     bool only_2d = false,
     bool verbose = false);
 

@@ -7,6 +7,8 @@
 #include "generic_io.h"
 #include "instruction.h"
 
+#include <algorithm>
+#include <vector>
 #include <iostream>
 #include <iomanip>
 
@@ -23,7 +25,10 @@ struct ProgramStats
     uint64_t h_gates{0};
     uint64_t cx_gates{0};
     uint64_t mswap_instructions{0};
-    uint64_t mprefetch_instructions{0}; 
+    uint64_t mprefetch_instructions{0};
+    uint64_t rz_instructions{0};
+    uint64_t rz_non_software_uops{0};
+    std::vector<size_t> rz_non_software_uops_samples{};
 };
 
 ////////////////////////////////////////////////////////////
@@ -32,6 +37,11 @@ struct ProgramStats
 ProgramStats analyze_binary_file(const std::string& input_file, uint64_t instruction_limit = 0, bool verbose = false)
 {
     ProgramStats stats;
+    auto count_non_software_rotation_uops = [](const INSTRUCTION& inst) {
+        return std::count_if(inst.urotseq.begin(), inst.urotseq.end(), [](INSTRUCTION::TYPE gate_type) {
+            return !is_software_instruction(gate_type);
+        });
+    };
     
     generic_strm_type istrm;
     generic_strm_open(istrm, input_file, "rb");
@@ -65,7 +75,10 @@ ProgramStats analyze_binary_file(const std::string& input_file, uint64_t instruc
         INSTRUCTION& inst = *inst_ptr;
         
         if (is_software_instruction(inst.type))
+        {
+            delete inst_ptr;
             continue;
+        }
 
         if (verbose)
             std::cout << "[" << stats.total_instructions << "] " << inst << "\n";
@@ -114,6 +127,15 @@ ProgramStats analyze_binary_file(const std::string& input_file, uint64_t instruc
 
             case INSTRUCTION::TYPE::RX:
             case INSTRUCTION::TYPE::RZ:
+            {
+                const size_t non_software_rotation_uops = count_non_software_rotation_uops(inst);
+                if (inst.type == INSTRUCTION::TYPE::RZ)
+                {
+                    stats.rz_instructions++;
+                    stats.rz_non_software_uops += non_software_rotation_uops;
+                    stats.rz_non_software_uops_samples.push_back(non_software_rotation_uops);
+                }
+
                 // For rotation gates, count only non-software gates in the unrolled sequence
                 for (auto gate_type : inst.urotseq)
                 {
@@ -141,6 +163,7 @@ ProgramStats analyze_binary_file(const std::string& input_file, uint64_t instruc
                     stats.unrolled_instructions++;
                 }
                 break;
+            }
 
             case INSTRUCTION::TYPE::CCX:
             case INSTRUCTION::TYPE::CCZ:
@@ -200,6 +223,28 @@ int main(int argc, char** argv)
         print_stat_line(std::cout, "CX_GATES", stats.cx_gates);
         print_stat_line(std::cout, "MSWAP_INSTRUCTIONS", stats.mswap_instructions);
         print_stat_line(std::cout, "MPREFETCH_INSTRUCTIONS", stats.mprefetch_instructions);
+        print_stat_line(std::cout, "AVG_RZ_NON_SOFTWARE_UOPS",
+                        stats.rz_instructions > 0
+                            ? static_cast<double>(stats.rz_non_software_uops)
+                                  / static_cast<double>(stats.rz_instructions)
+                            : 0.0);
+        if (!stats.rz_non_software_uops_samples.empty())
+        {
+            std::vector<size_t> sorted_rz_non_software_uops = stats.rz_non_software_uops_samples;
+            std::sort(sorted_rz_non_software_uops.begin(), sorted_rz_non_software_uops.end());
+            const size_t mid = sorted_rz_non_software_uops.size() / 2;
+            const double median_rz_non_software_uops =
+                (sorted_rz_non_software_uops.size() % 2 == 1)
+                    ? static_cast<double>(sorted_rz_non_software_uops[mid])
+                    : 0.5 * (static_cast<double>(sorted_rz_non_software_uops[mid - 1])
+                             + static_cast<double>(sorted_rz_non_software_uops[mid]));
+            print_stat_line(std::cout, "MEDIAN_RZ_NON_SOFTWARE_UOPS",
+                            median_rz_non_software_uops);
+        }
+        else
+        {
+            print_stat_line(std::cout, "MEDIAN_RZ_NON_SOFTWARE_UOPS", 0.0);
+        }
 
         // Calculate and print percentages
         if (stats.unrolled_instructions > 0)

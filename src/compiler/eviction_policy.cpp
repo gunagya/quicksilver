@@ -61,7 +61,8 @@ UsageData::last_use_at_or_before(qubit_type q, size_t layer) const
 UsageData
 build_usage_data(const std::string& file_path,
                  LayerType          layer_type,
-                 size_t             dag_inst_capacity)
+                 size_t             dag_inst_capacity,
+                 int64_t            inst_compile_limit)
 {
     UsageData ud;
 
@@ -79,8 +80,9 @@ build_usage_data(const std::string& file_path,
     std::unordered_map<qubit_type, size_t> qubit_layer;
     // Front-layer batch counter for UNWEIGHTED mode.
     size_t front_layer_counter = 0;
+    int64_t inst_done = 0;
 
-    while (true)
+    while (inst_done < inst_compile_limit)
     {
         bool saw_invalid_record = false;
         const char* invalid_reason = nullptr;
@@ -166,7 +168,7 @@ build_usage_data(const std::string& file_path,
                     if (jt != qubit_layer.end() && jt->second > max_pred)
                         max_pred = jt->second;
                 }
-                layer = max_pred + instruction_depth_weight(inst->type);
+                layer = max_pred + instruction_depth_weight(*inst);
             }
 
             // Record ld (qubits[0]) and st (qubits[1]) for every MSWAP.
@@ -188,6 +190,7 @@ build_usage_data(const std::string& file_path,
             }
 
             dag->remove_instruction_from_front_layer(inst);
+            inst_done += inst->uop_count();
             delete inst;
         }
 

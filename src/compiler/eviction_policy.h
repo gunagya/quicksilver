@@ -113,7 +113,8 @@ struct UsageData
  * */
 UsageData build_usage_data(const std::string& file_path,
                            LayerType          layer_type,
-                           size_t             dag_inst_capacity);
+                           size_t             dag_inst_capacity,
+                           int64_t            inst_compile_limit);
 
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////

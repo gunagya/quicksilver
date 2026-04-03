@@ -146,12 +146,14 @@ main(int argc, char* argv[])
                                             memory_block_capacity,
                                             MEMORY_CODE_DISTANCE,
                                             1, // num adapters
-                                            6, // load latency
-                                            1 // store latency
+                                            8, // load latency
+                                            4 // store latency
                                             );
         }
     } else if (use_optimal_memory_config || only_2d) {
         // Yoked: use optimal memory configuration
+        constexpr size_t MIN_1D_BLOCK_LOGICAL_QUBITS = 8;
+
         std::cout << "\n=== Computing Optimal Memory Configuration ===\n";
         std::cout << "Target logical qubits: " << main_memory_qubits << "\n";
         std::cout << "Target error rate: " << TARGET_MEMORY_ERROR_RATE << "\n";
@@ -159,7 +161,8 @@ main(int argc, char* argv[])
         if (only_2d) {
             std::cout << "Mode: Only 2D blocks (no 1D blocks)\n";
         } else {
-            std::cout << "Mode: With 1D block requirement\n";
+            std::cout << "Mode: Require a 1D block with logical size >= "
+                      << MIN_1D_BLOCK_LOGICAL_QUBITS << "\n";
         }
         std::cout << "\n";
         
@@ -167,7 +170,7 @@ main(int argc, char* argv[])
             main_memory_qubits,
             TARGET_MEMORY_ERROR_RATE,
             MEMORY_CODE_DISTANCE,
-            !only_2d,  // require_1d_block (false when only_2d is true)
+            only_2d ? 0 : MIN_1D_BLOCK_LOGICAL_QUBITS,
             only_2d,   // only_2d
             false      // verbose
         );
@@ -179,12 +182,19 @@ main(int argc, char* argv[])
         
         // Count and validate blocks
         size_t num_1d_blocks = 0;
+        size_t max_1d_logical_qubits = 0;
         for (const auto& block : optimal_config.blocks) {
-            if (block.is_1d) num_1d_blocks++;
+            if (block.is_1d) {
+                num_1d_blocks++;
+                max_1d_logical_qubits = std::max(max_1d_logical_qubits, block.logical_qubits);
+            }
         }
         
-        if (use_optimal_memory_config && num_1d_blocks != 1) {
-            std::cerr << "ERROR: Expected exactly one 1D block, found " << num_1d_blocks << "\n";
+        if (use_optimal_memory_config && max_1d_logical_qubits < MIN_1D_BLOCK_LOGICAL_QUBITS) {
+            std::cerr << "ERROR: Expected at least one 1D block with logical size >= "
+                      << MIN_1D_BLOCK_LOGICAL_QUBITS
+                      << ", found maximum 1D block size "
+                      << max_1d_logical_qubits << "\n";
             return 1;
         }
         
@@ -204,21 +214,6 @@ main(int argc, char* argv[])
         size_t idx = 0;
         for (auto block : optimal_config.blocks) {
             if (block.is_1d) {
-                // Enforce minimum of 8 logical qubits for 1D block (only when use_optimal_memory_config is set)
-                if (use_optimal_memory_config && block.logical_qubits < 8) {
-                    std::cout << "1D block has < 8 qubits (" << block.logical_qubits 
-                              << "), reconfiguring to 2 rows × 6 row_length = 8 qubits\n";
-                    block.rows = 2;
-                    block.row_length = 6;
-                    block.logical_qubits = 8;
-                    block.inner_code_distance = sim::yoked_codes::yoked_1d_min_inner_distance(
-                        block.rows, block.row_length, TARGET_MEMORY_ERROR_RATE);
-                    block.yoke_cycle_rounds = sim::yoked_codes::yoked_1d_yoke_cycle_rounds(
-                        block.rows, block.inner_code_distance);
-                    block.achieved_error_rate = sim::yoked_codes::yoked_1d_error_rate(
-                        block.yoke_cycle_rounds, block.row_length, block.inner_code_distance);
-                }
-                
                 std::cout << "  Creating 1D block: " << block.logical_qubits << " logical qubits, "
                           << block.rows << " rows, " << block.row_length << " row_length, "
                           << "d_inner=" << block.inner_code_distance << "\n";

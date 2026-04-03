@@ -59,7 +59,7 @@ SINGLEPASS_SCHEDULER::observe_compute_instructions(const std::vector<inst_ptr>& 
      * */
     for (auto* inst : insts)
     {
-        const size_t weight = instruction_depth_weight(inst->type);
+        const size_t weight = instruction_depth_weight(*inst);
 
         for (auto& entry : tracked_ops_)
         {

@@ -156,13 +156,22 @@ get_inst_qubit_count(INSTRUCTION::TYPE t)
 constexpr size_t
 instruction_depth_weight(INSTRUCTION::TYPE t)
 {
-    if (is_rotation_instruction(t))      return 20;
-    if (is_toffoli_like_instruction(t))  return 10;
-    if (is_memory_access(t))             return  5;  // includes MSWAP and MPLACE
-    if (is_prefetch_instruction(t))      return  5;
+    if (is_rotation_instruction(t))      return 100;
+    if (is_toffoli_like_instruction(t))  return 15;
+    if (is_memory_access(t))             return 10;  // includes MSWAP and MPLACE
+    if (is_prefetch_instruction(t))      return 10;
     if (is_cx_like_instruction(t))       return  2;
     if (is_software_instruction(t))      return  0;
     return 1;
+}
+
+inline size_t
+instruction_depth_weight(const INSTRUCTION& inst)
+{
+    if (is_rotation_instruction(inst.type))
+        return std::max(size_t{1}, inst.uop_count());
+
+    return instruction_depth_weight(inst.type);
 }
 
 ////////////////////////////////////////////////////////////

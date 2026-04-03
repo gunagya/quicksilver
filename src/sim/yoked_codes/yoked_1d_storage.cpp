@@ -29,6 +29,25 @@ size_t calculate_physical_qubit_count(size_t rows, size_t row_length, size_t inn
     + configuration::surface_code_physical_qubit_count(effective_code_distance);
 }
 
+std::string describe_qubit_location(const sim::YOKED_1D_STORAGE& storage,
+                                    const sim::MEMORY_SUBSYSTEM* memory_subsystem,
+                                    QUBIT* qubit)
+{
+    if (storage.contains(qubit))
+        return "1D storage";
+
+    QUBIT* located = memory_subsystem->retrieve_qubit(qubit->client_id, qubit->qubit_id);
+    if (located != nullptr)
+    {
+        auto storage_it = memory_subsystem->lookup(located);
+        if (storage_it != memory_subsystem->storages().end())
+            return (*storage_it)->name;
+        return "memory subsystem (unknown storage)";
+    }
+
+    return "compute/not in memory subsystem";
+}
+
 } // anon
 
 YOKED_1D_STORAGE::YOKED_1D_STORAGE(double freq_khz, 
@@ -44,8 +63,8 @@ YOKED_1D_STORAGE::YOKED_1D_STORAGE(double freq_khz,
               logical_qubit_count,
               effective_code_distance,
               1,
-              7,
-              2),
+              8,
+              4),
       rows_(rows),
       row_length_(row_length(rows, logical_qubit_count)),
       yoke_cycle_rounds_((8*rows+2)*inner_code_distance),
@@ -128,6 +147,17 @@ void YOKED_1D_STORAGE::execute_prefetch() {
         const bool ld_in_cold = !ld_in_1d
             && memory_subsystem_->retrieve_qubit(ld->client_id, ld->qubit_id) != nullptr;
         if (!st_in_1d || !ld_in_cold) {
+            std::cerr << "[YOKED_1D_STORAGE] stale prefetch elided at cycle "
+                      << current_cycle()
+                      << ": inst=" << *entry.inst
+                      << ", ld=q" << ld->qubit_id
+                      << " in " << describe_qubit_location(*this, memory_subsystem_, ld)
+                      << ", st=q" << st->qubit_id
+                      << " in " << describe_qubit_location(*this, memory_subsystem_, st)
+                      << " [st_in_1d=" << st_in_1d
+                      << ", ld_in_1d=" << ld_in_1d
+                      << ", ld_in_cold=" << ld_in_cold << "]\n";
+            throw _die{};
             completed_prefetches_.push(entry.inst);
             pending_prefetches_.pop();
             s_prefetches_elided++;

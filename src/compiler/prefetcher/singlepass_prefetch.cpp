@@ -47,7 +47,7 @@ SINGLEPASS_PREFETCH::observe_compute_instructions(const std::vector<inst_ptr>& i
 {
     for (auto* inst : insts)
     {
-        const size_t weight = instruction_depth_weight(inst->type);
+        const size_t weight = instruction_depth_weight(*inst);
 
         for (auto& entry : tracked_ops_)
         {
@@ -301,10 +301,13 @@ SINGLEPASS_PREFETCH::operator()(const std::vector<inst_ptr>& mswaps,
         inst_ptr pf = new INSTRUCTION{INSTRUCTION::TYPE::MPREFETCH, {e.ld, victim_st}};
         prefetch_accesses.push_back(pf);
         s_prefetches_emitted_++;
+        if (victim_distance != SIZE_MAX)
+            s_prefetch_candidate_distances_.push_back(victim_distance);
 
         if (verbose_)
             std::cout << "[SP_PREFETCH] MPREFETCH(ld=" << e.ld
-                      << ", victim=" << victim_st << ")\n";
+                      << ", victim=" << victim_st
+                      << ", local_distance=" << victim_distance << ")\n";
     }
 
     // -------------------------------------------------------
@@ -346,6 +349,17 @@ SINGLEPASS_PREFETCH::collect_stats(stats_type& stats) const
     stats.prefetch_operations = s_prefetches_emitted_;
     stats.prefetch_hits = s_prefetch_hits_;
     stats.cold_memory_accesses = s_prefetch_misses_;
+    if (!s_prefetch_candidate_distances_.empty())
+    {
+        std::vector<size_t> sorted_distances = s_prefetch_candidate_distances_;
+        std::sort(sorted_distances.begin(), sorted_distances.end());
+
+        const size_t mid = sorted_distances.size() / 2;
+        stats.median_prefetch_candidate_distance = (sorted_distances.size() % 2 == 1)
+            ? static_cast<double>(sorted_distances[mid])
+            : 0.5 * (static_cast<double>(sorted_distances[mid - 1])
+                     + static_cast<double>(sorted_distances[mid]));
+    }
 }
 
 ////////////////////////////////////////////////////////////

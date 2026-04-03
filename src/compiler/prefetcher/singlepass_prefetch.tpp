@@ -51,7 +51,8 @@ run_singlepass_prefetch(generic_strm_type&                     ostrm,
         scheduler.eviction_policy_.usage_data = build_usage_data(
             conf.input_file_path,
             conf.layer_type,
-            static_cast<size_t>(conf.dag_inst_capacity));
+            static_cast<size_t>(conf.dag_inst_capacity),
+            conf.inst_compile_limit);
     }
 
     stats_type stats;
@@ -68,6 +69,7 @@ run_singlepass_prefetch(generic_strm_type&                     ostrm,
     int64_t inst_done{0};
     size_t front_layer_counter{0};
     std::unordered_map<qubit_type, size_t> qubit_layer;
+    size_t max_weighted_layer{0};
 
     while (inst_done < conf.inst_compile_limit)
     {
@@ -104,7 +106,9 @@ run_singlepass_prefetch(generic_strm_type&                     ostrm,
                     if (jt != qubit_layer.end() && jt->second > max_pred)
                         max_pred = jt->second;
                 }
-                inst_layer = max_pred + instruction_depth_weight(inst->type);
+                inst_layer = max_pred + instruction_depth_weight(*inst);
+                if (inst_layer > max_weighted_layer)
+                    max_weighted_layer = inst_layer;
             }
 
             if (is_memory_access(inst->type))
@@ -189,6 +193,7 @@ run_singlepass_prefetch(generic_strm_type&                     ostrm,
     outgoing_buffer.clear();
 
     stats.unrolled_inst_done = inst_done;
+    stats.weighted_layers_processed = max_weighted_layer;
     scheduler.collect_stats(stats);
     return stats;
 }

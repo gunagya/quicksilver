@@ -11,6 +11,7 @@
 #include "sim/storage.h"
 #include "sim/yoked_codes/yoked_1d_storage.h"
 #include "sim/yoked_codes/yoked_cold_storage.h"
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
@@ -34,7 +35,8 @@ YOKED_ARCHITECTURE::YOKED_ARCHITECTURE(double freq_khz,
                     local_memory_capacity,
                     factories,
                     memory),
-    client_(client_trace_file, 0), simulation_instructions_(simulation_instructions)
+    client_(client_trace_file, 0),
+    simulation_instructions_(simulation_instructions)
 {
     // initialize all the memory:
     std::vector<std::vector<QUBIT*>> qubits_by_client({client_.qubits()});
@@ -232,6 +234,8 @@ YOKED_ARCHITECTURE::do_memory_access(inst_ptr inst, QUBIT* ld, QUBIT* st)
     auto result = COMPUTE_BASE::do_memory_access(inst, ld, st);
     
     if (result.progress) {
+        record_memory_op_bucket();
+
         // Track statistics
         if (is_1d_load) {
             s_1d_loads++;
@@ -298,6 +302,7 @@ YOKED_ARCHITECTURE::do_placement_access(inst_ptr inst, QUBIT* ld, QUBIT* st, QUB
     evict_1d->cycle_available = std::max(evict_1d->cycle_available, current_cycle() + total_latency);
 
     // Stats:
+    record_memory_op_bucket();
     // ld arrives from cold — counted separately from plain cold MSWAP.
     s_mplace_loads++;
     // can_operate_non_clifford_ for ld remains false (was false in cold);
@@ -308,6 +313,15 @@ YOKED_ARCHITECTURE::do_placement_access(inst_ptr inst, QUBIT* ld, QUBIT* st, QUB
 
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
+
+void
+YOKED_ARCHITECTURE::record_memory_op_bucket()
+{
+    const size_t bucket = current_cycle() / 200;
+    if (bucket >= s_memory_ops_per_250_cycles_.size())
+        s_memory_ops_per_250_cycles_.resize(bucket + 1, 0);
+    s_memory_ops_per_250_cycles_[bucket]++;
+}
 
 void
 YOKED_ARCHITECTURE::retire_instruction(CLIENT* c, inst_ptr inst, cycle_type inst_latency)
@@ -398,6 +412,67 @@ YOKED_ARCHITECTURE::print_yoked_storage_stats()
         print_stat_line(std::cout, "1D loads: already verified at load time",  s_1d_loads_already_ready);
         print_stat_line(std::cout, "1D loads: needed to wait for verification", 0UL);
         print_stat_line(std::cout, "Avg delay: 1D load to non-Clifford ready (cycles)", 0.0);
+    }
+
+    if (!s_memory_ops_per_250_cycles_.empty()) {
+        const double mean_memory_ops_per_250_cycles =
+            static_cast<double>(std::accumulate(s_memory_ops_per_250_cycles_.begin(),
+                                                s_memory_ops_per_250_cycles_.end(),
+                                                uint64_t{0}))
+            / s_memory_ops_per_250_cycles_.size();
+
+        auto sorted_buckets = s_memory_ops_per_250_cycles_;
+        std::sort(sorted_buckets.begin(), sorted_buckets.end());
+        double median_memory_ops_per_250_cycles;
+        const size_t mid = sorted_buckets.size() / 2;
+        if (sorted_buckets.size() % 2 == 0) {
+            median_memory_ops_per_250_cycles =
+                (static_cast<double>(sorted_buckets[mid - 1]) + sorted_buckets[mid]) / 2.0;
+        } else {
+            median_memory_ops_per_250_cycles = sorted_buckets[mid];
+        }
+
+        print_stat_line(std::cout, "Mean memory ops per 200 cycles", mean_memory_ops_per_250_cycles);
+        print_stat_line(std::cout, "Median memory ops per 200 cycles", median_memory_ops_per_250_cycles);
+
+        std::vector<uint64_t> nonzero_buckets;
+        std::copy_if(s_memory_ops_per_250_cycles_.begin(),
+                     s_memory_ops_per_250_cycles_.end(),
+                     std::back_inserter(nonzero_buckets),
+                     [] (uint64_t count) { return count > 0; });
+
+        if (!nonzero_buckets.empty()) {
+            const double mean_nonzero_memory_ops_per_250_cycles =
+                static_cast<double>(std::accumulate(nonzero_buckets.begin(),
+                                                    nonzero_buckets.end(),
+                                                    uint64_t{0}))
+                / nonzero_buckets.size();
+
+            std::sort(nonzero_buckets.begin(), nonzero_buckets.end());
+            double median_nonzero_memory_ops_per_250_cycles;
+            const size_t mid_nonzero = nonzero_buckets.size() / 2;
+            if (nonzero_buckets.size() % 2 == 0) {
+                median_nonzero_memory_ops_per_250_cycles =
+                    (static_cast<double>(nonzero_buckets[mid_nonzero - 1]) + nonzero_buckets[mid_nonzero]) / 2.0;
+            } else {
+                median_nonzero_memory_ops_per_250_cycles = nonzero_buckets[mid_nonzero];
+            }
+
+            print_stat_line(std::cout,
+                            "Mean memory ops per 250 cycles (non-zero windows)",
+                            mean_nonzero_memory_ops_per_250_cycles);
+            print_stat_line(std::cout,
+                            "Median memory ops per 250 cycles (non-zero windows)",
+                            median_nonzero_memory_ops_per_250_cycles);
+        } else {
+            print_stat_line(std::cout, "Mean memory ops per 250 cycles (non-zero windows)", 0.0);
+            print_stat_line(std::cout, "Median memory ops per 250 cycles (non-zero windows)", 0.0);
+        }
+    } else {
+        print_stat_line(std::cout, "Mean memory ops per 250 cycles", 0.0);
+        print_stat_line(std::cout, "Median memory ops per 250 cycles", 0.0);
+        print_stat_line(std::cout, "Mean memory ops per 250 cycles (non-zero windows)", 0.0);
+        print_stat_line(std::cout, "Median memory ops per 250 cycles (non-zero windows)", 0.0);
     }
     
     // Print error stats for all yoked storages

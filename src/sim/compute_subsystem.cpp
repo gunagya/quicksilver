@@ -407,7 +407,7 @@ COMPUTE_SUBSYSTEM::fetch_and_execute_instructions_from_client(CLIENT* c)
         
         // (rpc) if this is the first visit for this instruction, check the `rotation_subsystem_`
         // and do other actions:
-        if (is_rpc_enabled() && is_rotation_instruction(inst->type) && !inst->rpc_has_been_visited)
+        if (is_rpc_enabled() && is_rotation_instruction(inst->type) && !inst->rdr_has_been_visited)
             if (rpc_handle_instruction(c, inst, operands[0]))
                 continue;
             
@@ -532,7 +532,7 @@ COMPUTE_SUBSYSTEM::rpc_find_and_attempt_allocate_for_future_rotation(CLIENT* c, 
     constexpr size_t RPC_DAG_LOOKAHEAD_START_LAYER{0};
     constexpr size_t RPC_DAG_LOOKAHEAD_DEPTH{16};
     
-    inst->rpc_has_been_visited = true;
+    inst->rdr_has_been_visited = true;
 
     if (!is_rpc_enabled())
         return;

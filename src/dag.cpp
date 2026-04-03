@@ -207,7 +207,7 @@ DAG::get_memory_instructions_upto_depth(size_t depth) const
                 if (is_memory_access(x->inst->type))
                     mem_insts.push_back({x->tmp_depth_, x->inst});
 
-                size_t next_depth = x->tmp_depth_ + instruction_depth_weight(x->inst->type);
+                size_t next_depth = x->tmp_depth_ + instruction_depth_weight(*x->inst);
                 for (node_type* y : x->dependent)
                 {
                     if (y->last_generation_ != gen)

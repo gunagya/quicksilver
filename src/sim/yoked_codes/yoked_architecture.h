@@ -62,6 +62,7 @@ class YOKED_ARCHITECTURE: public COMPUTE_BASE
     std::map<QUBIT*, bool> can_operate_non_clifford_; 
 
     YOKED_1D_STORAGE* yoked_1d_storage_ = nullptr;
+    std::vector<uint64_t> s_memory_ops_per_250_cycles_;
 
     // Statistics for tracking 1D storage effectiveness
     uint64_t s_1d_loads{0};     // Loads from 1D storage
@@ -72,6 +73,7 @@ class YOKED_ARCHITECTURE: public COMPUTE_BASE
     uint64_t s_1d_loads_delayed{0};          // 1D loads where verification had not yet completed at load time
     uint64_t s_1d_loads_already_ready{0};    // 1D loads where qubit was already verified at load time
 
+    void record_memory_op_bucket();
     void retire_instruction(CLIENT* c, inst_ptr inst, cycle_type inst_latency);
 
   public:

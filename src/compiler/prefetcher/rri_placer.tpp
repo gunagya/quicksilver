@@ -254,7 +254,8 @@ run_rri_placer(generic_strm_type& ostrm,
         placer.eviction_policy_.usage_data = build_usage_data(
             conf.input_file_path,
             conf.layer_type,
-            static_cast<size_t>(conf.dag_inst_capacity));
+            static_cast<size_t>(conf.dag_inst_capacity),
+            conf.inst_compile_limit);
     }
 
     // Read and forward the qubit count header.

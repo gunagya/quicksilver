@@ -48,11 +48,11 @@ size_t min_code_distance_for_error_rate(double target_error_rate) {
 ////////////////////////////////////////////////////////////
 
 size_t yoked_1d_yoke_cycle_rounds(size_t rows, size_t inner_code_distance) {
-    return (8 * rows + 2) * inner_code_distance;
+    return 2 * (8 * rows + 2) * inner_code_distance;
 }
 
 size_t yoked_2d_yoke_cycle_rounds(size_t grid_length, size_t inner_code_distance) {
-    return (25 * grid_length + 4) * inner_code_distance;
+    return round(1.2 * (25 * grid_length + 4) * inner_code_distance);
 }
 
 ////////////////////////////////////////////////////////////
@@ -176,7 +176,7 @@ std::map<size_t, OptimalBlock> precompute_optimal_blocks(
 std::pair<DPState, DPState> find_optimal_config_dp(
     size_t target_logical_qubits,
     const std::map<size_t, OptimalBlock>& optimal_blocks,
-    bool require_1d_block,
+    size_t min_1d_size,
     bool verbose) {
     
     if (verbose) {
@@ -207,8 +207,8 @@ std::pair<DPState, DPState> find_optimal_config_dp(
                 }
             }
             
-            // Update 1D-constrained DP
-            if (block_config.is_1d) {
+            // Update min-1D-size constrained DP
+            if (block_config.is_1d && block_config.logical_qubits >= min_1d_size) {
                 if (dp[remaining].physical_qubits != std::numeric_limits<size_t>::max()) {
                     size_t total_phys = dp[remaining].physical_qubits + block_config.physical_qubits;
                     
@@ -218,15 +218,15 @@ std::pair<DPState, DPState> find_optimal_config_dp(
                         dp_with_1d[l].blocks.push_back(block_config);
                     }
                 }
-            } else {
-                if (dp_with_1d[remaining].physical_qubits != std::numeric_limits<size_t>::max()) {
-                    size_t total_phys = dp_with_1d[remaining].physical_qubits + block_config.physical_qubits;
-                    
-                    if (total_phys < dp_with_1d[l].physical_qubits) {
-                        dp_with_1d[l].physical_qubits = total_phys;
-                        dp_with_1d[l].blocks = dp_with_1d[remaining].blocks;
-                        dp_with_1d[l].blocks.push_back(block_config);
-                    }
+            }
+
+            if (dp_with_1d[remaining].physical_qubits != std::numeric_limits<size_t>::max()) {
+                size_t total_phys = dp_with_1d[remaining].physical_qubits + block_config.physical_qubits;
+                
+                if (total_phys < dp_with_1d[l].physical_qubits) {
+                    dp_with_1d[l].physical_qubits = total_phys;
+                    dp_with_1d[l].blocks = dp_with_1d[remaining].blocks;
+                    dp_with_1d[l].blocks.push_back(block_config);
                 }
             }
         }
@@ -252,13 +252,73 @@ std::pair<DPState, DPState> find_optimal_config_dp(
         std::cout << "Found optimal configuration with " << best_logical_count 
                   << " logical qubits (target was " << target_logical_qubits << ")\n";
         
-        if (require_1d_block) {
-            std::cout << "Found optimal configuration with 1D constraint: " << best_logical_count_with_1d 
+        if (min_1d_size > 0) {
+            std::cout << "Found optimal configuration with min-1D-size constraint: "
+                      << best_logical_count_with_1d
                       << " logical qubits\n";
         }
     }
     
     return {best_config, best_config_with_1d};
+}
+
+std::vector<size_t> optimal_physical_qubits_by_target(
+    size_t max_target_logical_qubits,
+    const std::map<size_t, OptimalBlock>& optimal_blocks,
+    size_t min_1d_size,
+    bool verbose) {
+
+    constexpr size_t TARGET_OVERSHOOT = 1000;
+    const size_t max_dp_size = max_target_logical_qubits + TARGET_OVERSHOOT;
+    const size_t INF = std::numeric_limits<size_t>::max();
+
+    if (verbose) {
+        std::cout << "Running DP sweep up to " << max_target_logical_qubits
+                  << " logical qubits";
+        if (min_1d_size > 0) {
+            std::cout << " with min_1d_size=" << min_1d_size;
+        }
+        std::cout << "...\n";
+    }
+
+    std::vector<size_t> dp(max_dp_size + 1, INF);
+    std::vector<size_t> dp_with_1d(max_dp_size + 1, INF);
+    dp[0] = 0;
+
+    for (size_t l = 1; l <= max_dp_size; ++l) {
+        for (const auto& [block_logical, block_config] : optimal_blocks) {
+            if (block_logical > l) continue;
+
+            const size_t remaining = l - block_logical;
+
+            if (dp[remaining] != INF) {
+                dp[l] = std::min(dp[l], dp[remaining] + block_config.physical_qubits);
+            }
+
+            if (block_config.is_1d && block_config.logical_qubits >= min_1d_size && dp[remaining] != INF) {
+                dp_with_1d[l] = std::min(dp_with_1d[l], dp[remaining] + block_config.physical_qubits);
+            }
+
+            if (dp_with_1d[remaining] != INF) {
+                dp_with_1d[l] = std::min(dp_with_1d[l], dp_with_1d[remaining] + block_config.physical_qubits);
+            }
+        }
+    }
+
+    const auto& source = (min_1d_size > 0) ? dp_with_1d : dp;
+
+    std::vector<size_t> best_from(source.size(), INF);
+    size_t running_best = INF;
+    for (size_t l = source.size(); l-- > 0; ) {
+        running_best = std::min(running_best, source[l]);
+        best_from[l] = running_best;
+    }
+
+    if (verbose) {
+        std::cout << "Completed DP sweep.\n";
+    }
+
+    return best_from;
 }
 
 void print_config(const DPState& config, size_t effective_code_distance, double target_error_rate) {
@@ -337,20 +397,21 @@ DPState optimize_memory_config(
     size_t target_logical_qubits,
     double target_error_rate,
     size_t effective_code_distance,
-    bool require_1d_block,
+    size_t min_1d_size,
     bool only_2d,
     bool verbose) {
     
-    size_t max_precompute = std::min(target_logical_qubits + 500, size_t(1500));
+    size_t max_precompute = std::min(target_logical_qubits + 500, size_t(2500));
     auto optimal_blocks = precompute_optimal_blocks(max_precompute, effective_code_distance, target_error_rate, only_2d, verbose);
     
     if (optimal_blocks.empty()) {
         return DPState();
     }
     
-    auto [optimal, optimal_with_1d] = find_optimal_config_dp(target_logical_qubits, optimal_blocks, require_1d_block, verbose);
+    auto [optimal, optimal_with_1d] =
+        find_optimal_config_dp(target_logical_qubits, optimal_blocks, min_1d_size, verbose);
     
-    return require_1d_block ? optimal_with_1d : optimal;
+    return min_1d_size > 0 ? optimal_with_1d : optimal;
 }
 
 }  // namespace yoked_codes

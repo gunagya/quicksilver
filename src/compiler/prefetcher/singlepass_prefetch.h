@@ -107,6 +107,7 @@ struct SINGLEPASS_PREFETCH
     mutable uint64_t s_prefetches_emitted_{0};
     mutable uint64_t s_prefetch_hits_{0};
     mutable uint64_t s_prefetch_misses_{0};
+    mutable std::vector<size_t> s_prefetch_candidate_distances_;
 
     explicit SINGLEPASS_PREFETCH(const singlepass_prefetch_config_type& conf);
 

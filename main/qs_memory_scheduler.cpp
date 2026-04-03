@@ -368,9 +368,13 @@ main(int argc, char* argv[])
         std::cout << "\n";
         print_stat_line(std::cout, "SP_PREFETCH_INST_DONE", sp_stats.unrolled_inst_done);
         print_stat_line(std::cout, "SP_PREFETCH_LAYERS_PROCESSED", sp_stats.layers_processed);
-        print_stat_line(std::cout, "SP_PREFETCH_OPERATIONS", sp_stats.prefetch_operations);
-        print_stat_line(std::cout, "SP_PREFETCH_HITS", sp_stats.prefetch_hits);
+        print_stat_line(std::cout, "SP_PREFETCH_WEIGHTED_LAYERS_PROCESSED",
+                        sp_stats.weighted_layers_processed);
+        print_stat_line(std::cout, "SP_PREFETCH_PREFETCHES_INSERTED", sp_stats.prefetch_operations);
+        print_stat_line(std::cout, "SP_PREFETCH_CACHE_HITS", sp_stats.prefetch_hits);
         print_stat_line(std::cout, "SP_PREFETCH_COLD_MEMORY_ACCESSES", sp_stats.cold_memory_accesses);
+        print_stat_line(std::cout, "SP_PREFETCH_MEDIAN_CANDIDATE_DISTANCE",
+                        sp_stats.median_prefetch_candidate_distance);
         print_stat_line(std::cout, "SP_PREFETCH_MISS_RATE", sp_prefetch_miss_rate);
         print_stat_line(std::cout, "SP_PREFETCH_TIME_SECONDS", sp_prefetch_time_seconds);
     }
