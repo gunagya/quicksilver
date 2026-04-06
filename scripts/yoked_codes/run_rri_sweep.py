@@ -16,7 +16,7 @@ Step 2 — simulate:
 Step 3 — write CSV.
   One row per (benchmark × intermediate_capacity × eviction_policy).
   Columns: benchmark, active_set_capacity, intermediate_capacity,
-           eviction_policy, miss_rate, ipc.
+           eviction_policy, miss_rate, ipc, excessive_error_rates.
 """
 
 import subprocess
@@ -38,11 +38,12 @@ MEM_FIRSTPASS_DIR = RAW_BIN_DIR / "mem" / "firstpass"
 MEM_SECONDPASS_DIR = RAW_BIN_DIR / "mem" / "secondpass" / "cache"
 
 ACTIVE_SET_CAPACITY = 4
-SIM_INSTRUCTIONS    = 100_000_000
-INTERMEDIATE_SIZES  = [8]
+SIM_INSTRUCTIONS    = 1_000_000
+INTERMEDIATE_SIZES  = [4, 8, 12, 16]
 EVICTION_POLICIES   = ["rri", "lru"]
 
-MS_INST_LIMIT       = 200_000_000
+MS_INST_LIMIT       = 2_000_000
+SECONDPASS_INST_LIMIT_DELTA = 100_000
 
 # Benchmarks: (raw_binary_filename, factory_phys_qubit_budget, label)
 BENCHMARKS = [
@@ -56,7 +57,7 @@ BENCHMARKS = [
     ("BQ_hc3h2cn_t.xz",                          50_000, "hc3h2cn_t"),
     ("BQ_manganese_nitride_q.xz",              50_000, "manganese_nitride_q"),
     ("BQ_manganese_nitride_t.xz",              50_000, "manganese_nitride_t"),
-    # ("shor_modmult_N16777259_a3_pow0.bin",               50_000, "shor_rsa24"),
+    ("shor_modmult_N16777259_a3_pow0.bin",               50_000, "shor_rsa24"),
     ("BQ_grover_3sat_schoning_1710.xz",                 50_000, "grover_3sat")
 ]
 
@@ -64,14 +65,28 @@ BENCHMARKS = [
 # Path helpers
 ############################################################
 
+def human_inst_limit(inst_limit: int) -> str:
+    if inst_limit % 1_000_000 == 0:
+        return f"{inst_limit // 1_000_000}M"
+    if inst_limit % 1_000 == 0:
+        return f"{inst_limit // 1_000}K"
+    return str(inst_limit)
+
+
+def secondpass_inst_limit() -> int:
+    return max(1, MS_INST_LIMIT - SECONDPASS_INST_LIMIT_DELTA)
+
+
 def firstpass_mem_binary(label: str) -> Path:
     """Precompiled first-pass EIF output (shared across cap/policy variants)."""
-    return MEM_FIRSTPASS_DIR / label / f"{label}_c{ACTIVE_SET_CAPACITY}.bin"
+    limit_tag = human_inst_limit(MS_INST_LIMIT)
+    return MEM_FIRSTPASS_DIR / label / f"{label}_c{ACTIVE_SET_CAPACITY}_{limit_tag}.bin"
 
 
 def rri_mem_binary(label: str, cap: int, policy: str) -> Path:
     """Second-pass RRI-placer output for a given capacity + eviction policy."""
-    return MEM_SECONDPASS_DIR / label / f"{label}_i{cap}_c{ACTIVE_SET_CAPACITY}_{policy}.bin"
+    limit_tag = human_inst_limit(MS_INST_LIMIT)
+    return MEM_SECONDPASS_DIR / label / f"{label}_i{cap}_c{ACTIVE_SET_CAPACITY}_{policy}_{limit_tag}.bin"
 
 
 ############################################################
@@ -79,12 +94,12 @@ def rri_mem_binary(label: str, cap: int, policy: str) -> Path:
 ############################################################
 
 def run(cmd: list, desc: str) -> str | None:
-    """Run a subprocess; return stdout string or None on failure."""
+    """Run a subprocess; return combined stdout/stderr text or None on failure."""
     print(f"\n>>> {desc}")
     print("    " + " ".join(str(x) for x in cmd))
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        return r.stdout
+        return (r.stdout or "") + (("\n" + r.stderr) if r.stderr else "")
     except subprocess.CalledProcessError as e:
         print(f"  FAILED (rc={e.returncode})")
         if e.stdout:
@@ -112,6 +127,18 @@ def istat(output, key):
     return int(float(v)) if v is not None else None
 
 
+def parse_excessive_error_rates(output: str | None) -> str | None:
+    if output is None:
+        return None
+    matches = re.findall(
+        r"\[(YOKED_(?:COLD|1D)_STORAGE)\] logical-qubit round error rate exceeded threshold:\s*([0-9.eE+\-]+)",
+        output,
+    )
+    if not matches:
+        return None
+    return "; ".join(f"{block}={rate}" for block, rate in matches)
+
+
 ############################################################
 # Step 1 — compile
 ############################################################
@@ -136,6 +163,7 @@ def compile_all(benchmarks, rebuild_firstpass: bool = False) -> dict:
     for bm in benchmarks:
         raw_file, _factory, label = bm[0], bm[1], bm[2]
         inst_limit = MS_INST_LIMIT
+        secondpass_limit = secondpass_inst_limit()
         raw_path = RAW_BIN_DIR / raw_file
 
         if not raw_path.exists():
@@ -193,7 +221,7 @@ def compile_all(benchmarks, rebuild_firstpass: bool = False) -> dict:
                     str(raw_path), str(stage_a_dummy_out),
                     "-c", str(ACTIVE_SET_CAPACITY),
                     "-s", "0",
-                    "-i", str(inst_limit),
+                    "-i", str(secondpass_limit),
                     "-pp", "0",
                     "-r",
                     "--rri-input",                 str(eif_out),
@@ -286,6 +314,7 @@ def simulate_all(benchmarks, compile_stats, csv_path: Path | None = None) -> lis
                 "eviction_policy":        "eif_baseline",
                 "miss_rate":              eif_miss_rate,
                 "ipc":                    eif_ipc,
+                "excessive_error_rates":  parse_excessive_error_rates(eif_out),
             }
             rows.append(row)
             if writer is not None:
@@ -313,6 +342,7 @@ def simulate_all(benchmarks, compile_stats, csv_path: Path | None = None) -> lis
                         "eviction_policy":        policy,
                         "miss_rate":              miss_rate,
                         "ipc":                    ipc,
+                        "excessive_error_rates":  parse_excessive_error_rates(sim_out),
                     }
                     rows.append(row)
                     if writer is not None:
@@ -336,6 +366,7 @@ FIELDNAMES = [
     "eviction_policy",
     "miss_rate",
     "ipc",
+    "excessive_error_rates",
 ]
 
 

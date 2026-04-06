@@ -24,6 +24,22 @@ endif()
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Help CMake find a non-system Bison installation (for example Homebrew's
+# `bison 3.2`) before calling `find_package(BISON)`.
+find_program(HOMEBREW_BISON_EXECUTABLE
+    NAMES bison
+    PATHS
+        /opt/homebrew/opt/bison/bin
+        /usr/local/opt/bison/bin
+        $ENV{BISON_ROOT}/bin
+        $ENV{BISON_DIR}/bin
+        $ENV{BISON_HOME}/bin
+    NO_DEFAULT_PATH
+)
+if (HOMEBREW_BISON_EXECUTABLE)
+    set(BISON_EXECUTABLE "${HOMEBREW_BISON_EXECUTABLE}" CACHE FILEPATH "Path to bison executable" FORCE)
+endif()
+
 # Find required packages
 find_package(FLEX REQUIRED)
 find_package(BISON REQUIRED)

@@ -14,6 +14,8 @@ namespace sim {
 
 namespace {
 
+constexpr double error_rate_warning_threshold = 1e-15;
+
 size_t row_length(size_t rows, size_t logical_qubit_count) {
     // Row length must be a multiple of 2. Finds the smallest multiple of 2 that suffices.
     size_t row_length = (logical_qubit_count + rows - 1) / rows;
@@ -68,7 +70,7 @@ YOKED_1D_STORAGE::YOKED_1D_STORAGE(double freq_khz,
       rows_(rows),
       row_length_(row_length(rows, logical_qubit_count)),
       yoke_cycle_rounds_((8*rows+2)*inner_code_distance),
-      max_mem_rounds_(4*yoke_cycle_rounds_),
+      max_mem_rounds_(10*yoke_cycle_rounds_),
       inner_code_distance_(inner_code_distance), 
       effective_code_distance_(effective_code_distance) {
     cycle_available_[0] = 1;
@@ -78,6 +80,29 @@ void YOKED_1D_STORAGE::set_memory_subsystem(MEMORY_SUBSYSTEM* mem_subsystem) {
     memory_subsystem_ = mem_subsystem;
 }
 
+void YOKED_1D_STORAGE::finalize_yoke_check() {
+    sum_rpow2_ += std::pow(r_, 2);
+    r_ = 0;
+    phase_progress_ = 0;
+    ro_++;
+}
+
+void YOKED_1D_STORAGE::begin_idle_yoke_check() {
+    current_phase_ = CHECK_YOKE;
+    phase_progress_ = 0;
+    cycle_available_[0] = current_cycle() + 2;
+}
+
+void YOKED_1D_STORAGE::record_memory_op_start() {
+    if (has_last_memory_op_start_cycle_) {
+        s_inter_memory_op_start_cycles += current_cycle() - last_memory_op_start_cycle_;
+    }
+    last_memory_op_start_cycle_ = current_cycle();
+    has_last_memory_op_start_cycle_ = true;
+    s_memory_op_starts++;
+    finalize_yoke_check();
+}
+
 long YOKED_1D_STORAGE::operate() {
     r_ += effective_code_distance_;
 
@@ -85,8 +110,8 @@ long YOKED_1D_STORAGE::operate() {
         case CHECK_YOKE:
             phase_progress_ += effective_code_distance_;
             if (phase_progress_ >= yoke_cycle_rounds_) {
-                // Yoke check complete, reset progress and move to memory ops
-                phase_progress_ = 0;
+                // Idle-triggered yoke check complete; finalize the interval and resume serving ops.
+                finalize_yoke_check();
                 current_phase_ = MEMORY_OPS;
             } else {
                 cycle_available_[0]++;
@@ -94,16 +119,9 @@ long YOKED_1D_STORAGE::operate() {
             break;
         case MEMORY_OPS:
             phase_progress_ += effective_code_distance_;
-            if (has_free_adapter() && phase_progress_ >= max_mem_rounds_) {
-                // Memory ops complete, reset progress and move back to yoke check
-                sum_rpow2_ += pow(r_, 2);
-                r_ = 0;
-                phase_progress_ = 0;
-                current_phase_ = CHECK_YOKE;
-                cycle_available_[0] = current_cycle() + 2;
-                ro_++;
-            } else {
-                execute_prefetch();
+            execute_prefetch();
+            if (phase_progress_ >= max_mem_rounds_) {
+                begin_idle_yoke_check();
             }
             break;
     }
@@ -116,6 +134,7 @@ YOKED_1D_STORAGE::do_memory_access(QUBIT* ld, QUBIT* st) {
     auto result = STORAGE::do_memory_access(ld, st);
     
     if (result.success) {
+        record_memory_op_start();
         // Track residence time for qubit going to compute region
         if (qubit_entry_cycle_.count(ld) > 0) {
             s_residence_time_to_compute += current_cycle() - qubit_entry_cycle_[ld];
@@ -188,10 +207,12 @@ void YOKED_1D_STORAGE::execute_prefetch() {
     // Update 1D storage contents: st leaves 1D, ld enters 1D.
     result = STORAGE::do_memory_access(st, ld);
     assert(result.success);
+    record_memory_op_start();
 
     // Track residence time: st exits 1D to cold.
     if (qubit_entry_cycle_.count(st) > 0) {
         s_residence_time_to_2d += current_cycle() - qubit_entry_cycle_[st];
+        // std::cout<<"Qubit " << st->qubit_id << " evicted from 1D, entered " << qubit_entry_cycle_[st] << " exiting "<< current_cycle() << "\n";
         s_qubits_to_2d++;
         qubit_entry_cycle_.erase(st);
     }
@@ -235,6 +256,7 @@ YOKED_1D_STORAGE::do_placement_eviction(QUBIT* evict_1d, QUBIT* st_compute)
     auto result = STORAGE::do_memory_access(evict_1d, st_compute);
     if (!result.success)
         return result;
+    record_memory_op_start();
 
     // Residence time: evict_1d exits 1D toward cold (not compute).
     if (qubit_entry_cycle_.count(evict_1d) > 0) {
@@ -250,10 +272,25 @@ YOKED_1D_STORAGE::do_placement_eviction(QUBIT* evict_1d, QUBIT* st_compute)
 
 void YOKED_1D_STORAGE::error_stats() {
     std::cout << "YOKED_1D_STORAGE Error Stats:\n";
-    std::cout << "RMS r per yoke cycle: " << std::pow(sum_rpow2_ / ro_, 0.5) << " vs an ideal " << yoke_cycle_rounds_ << "\n";
-    std::cout << "Per logical-qubit round error rate: " << std::scientific << (sum_rpow2_ * pow(row_length_, 2) 
-    * std::pow(15.0, -static_cast<double>(inner_code_distance_)) / 100.0) 
-    / (current_cycle() * effective_code_distance_ * (row_length_-2))<<'\n';
+    const double rms_r_per_yoke_cycle = ro_ > 0 ? std::sqrt(sum_rpow2_ / ro_) : 0.0;
+    std::cout << "RMS r per yoke cycle: " << rms_r_per_yoke_cycle << " vs an ideal " << yoke_cycle_rounds_ << "\n";
+    const double logical_round_error_rate = (ro_ > 0 && current_cycle() > 0)
+        ? (sum_rpow2_ * std::pow(row_length_, 2)
+            * std::pow(15.0, -static_cast<double>(inner_code_distance_)) / 100.0)
+            / (current_cycle() * effective_code_distance_ * (row_length_-2))
+        : 0.0;
+    std::cout << "Per logical-qubit round error rate: " << std::scientific
+              << logical_round_error_rate << '\n';
+    if (logical_round_error_rate > error_rate_warning_threshold) {
+        std::cerr << "[YOKED_1D_STORAGE] logical-qubit round error rate exceeded threshold: "
+                  << logical_round_error_rate << " > " << error_rate_warning_threshold << "\n";
+    }
+
+    const double avg_cycles_between_memory_op_starts = s_memory_op_starts > 1
+        ? static_cast<double>(s_inter_memory_op_start_cycles) / static_cast<double>(s_memory_op_starts - 1)
+        : 0.0;
+    print_stat_line(std::cout, "Avg cycles between consecutive memory-op starts", avg_cycles_between_memory_op_starts);
+    print_stat_line(std::cout, "1D memory-op starts counted", s_memory_op_starts);
     
     std::cout << "\nResidence Time Statistics:\n";
     if (s_qubits_to_compute > 0) {
@@ -273,16 +310,7 @@ void YOKED_1D_STORAGE::error_stats() {
     }
     
     std::cout << "\nPrefetch Stats:\n";
-    print_stat_line(std::cout, "Prefetches received",  s_prefetches_received);
     print_stat_line(std::cout, "Prefetches executed",  s_prefetches_executed);
-    print_stat_line(std::cout, "Prefetches elided (stale)", s_prefetches_elided);
-    print_stat_line(std::cout, "  of which: ld already in compute", s_prefetches_elided_ld_in_compute);
-    if (s_prefetches_received > 0) {
-        double hit_rate = 100.0 * s_prefetches_executed / s_prefetches_received;
-        print_stat_line(std::cout, "Prefetch success rate (%)", hit_rate);
-    } else {
-        print_stat_line(std::cout, "Prefetch success rate (%)", 0.0);
-    }
 }
 
 } // namespace sim

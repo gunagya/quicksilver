@@ -11,6 +11,7 @@ its source location immediately before the op:
 Locations are tracked through the trace using:
   - mswap(ld, st): swap locations(ld, st)
   - mplace(ld, st, evict): ld -> compute, st -> intermediate, evict -> memory
+  - mprefetch(ld, st): ld -> intermediate, st -> memory
 
 The initial residency is inferred from capacities:
   - qubits [0, c) start in compute
@@ -103,10 +104,16 @@ def parse_args() -> argparse.Namespace:
         help="Number of instructions aggregated into each output row",
     )
     parser.add_argument(
+        "--qubit-bin-size",
+        type=int,
+        default=1,
+        help="Number of qubits aggregated into each output column",
+    )
+    parser.add_argument(
         "--column-width",
         type=float,
         default=8.0,
-        help="Width of a qubit column in SVG units",
+        help="Width of a qubit-bin column in SVG units",
     )
     parser.add_argument(
         "--row-height",
@@ -204,7 +211,7 @@ def load_instruction_rows(
                 continue
             if end is not None and inst_idx >= end:
                 continue
-            if opcode not in {"mswap", "mplace"}:
+            if opcode not in {"mswap", "mplace", "mprefetch"}:
                 continue
 
             rows.append((inst_idx, opcode, qubits))
@@ -310,8 +317,38 @@ def aggregate_instruction_bins(
             locations[ld] = "compute"
             locations[st] = "intermediate"
             locations[evict] = "memory"
+        elif opcode == "mprefetch":
+            st = qubits[1]
+            locations[ld] = "intermediate"
+            locations[st] = "memory"
 
     return memory_bins, intermediate_bins, total_memory_loads, total_intermediate_loads
+
+
+def aggregate_qubit_bins(
+    memory_bins: list[list[int]],
+    intermediate_bins: list[list[int]],
+    qubit_bin_size: int,
+) -> tuple[list[list[int]], list[list[int]], int]:
+    if qubit_bin_size <= 0:
+        raise SystemExit("--qubit-bin-size must be positive")
+
+    if not memory_bins:
+        return memory_bins, intermediate_bins, 0
+
+    num_qubits = len(memory_bins[0])
+    num_qubit_bins = max(1, math.ceil(num_qubits / qubit_bin_size))
+
+    binned_memory = [[0 for _ in range(num_qubit_bins)] for _ in range(len(memory_bins))]
+    binned_intermediate = [[0 for _ in range(num_qubit_bins)] for _ in range(len(intermediate_bins))]
+
+    for row_idx in range(len(memory_bins)):
+        for qubit in range(num_qubits):
+            bin_idx = qubit // qubit_bin_size
+            binned_memory[row_idx][bin_idx] += memory_bins[row_idx][qubit]
+            binned_intermediate[row_idx][bin_idx] += intermediate_bins[row_idx][qubit]
+
+    return binned_memory, binned_intermediate, num_qubit_bins
 
 
 def usage_to_color(memory_count: int, intermediate_count: int, max_count: int) -> str:
@@ -339,6 +376,7 @@ def render_svg(
     memory_bins: list[list[int]],
     intermediate_bins: list[list[int]],
     num_qubits: int,
+    qubit_bin_size: int,
     start: int,
     end: int | None,
     instruction_bin_size: int,
@@ -354,10 +392,11 @@ def render_svg(
     font_size = 33
     small_font_size = 30
     row_count = len(memory_bins)
+    qubit_bin_count = len(memory_bins[0]) if memory_bins else 0
     left_axis_width = max(140.0, font_size * 3.8)
     bottom_axis_height = max(90.0, font_size * 2.6)
     legend_width = max(310.0, font_size * 8.5)
-    bitmap_width = num_qubits * column_width
+    bitmap_width = qubit_bin_count * column_width
     bitmap_height = row_count * row_height
     width = 2 * margin + left_axis_width + bitmap_width + legend_width
     height = 2 * margin + bitmap_height + bottom_axis_height
@@ -365,7 +404,7 @@ def render_svg(
         (
             memory_bins[row_idx][qubit] + intermediate_bins[row_idx][qubit]
             for row_idx in range(row_count)
-            for qubit in range(num_qubits)
+            for qubit in range(qubit_bin_count)
         ),
         default=0,
     )
@@ -383,7 +422,7 @@ def render_svg(
             f'  <rect x="0" y="0" width="{width}" height="{height}" fill="{html.escape(background)}"/>\n'
         )
         out.write(
-            f"  <title>{html.escape(f'Instruction load map: qubits={num_qubits}, c={compute_capacity}, i={intermediate_capacity}, bin_size={instruction_bin_size}, max_loads_per_cell={max_usage}')}</title>\n"
+            f"  <title>{html.escape(f'Instruction load map: qubits={num_qubits}, c={compute_capacity}, i={intermediate_capacity}, instruction_bin={instruction_bin_size}, qubit_bin={qubit_bin_size}, max_loads_per_cell={max_usage}')}</title>\n"
         )
         out.write('  <g shape-rendering="crispEdges">\n')
         out.write(
@@ -393,12 +432,12 @@ def render_svg(
 
         for row_offset in range(row_count):
             y = y0 + row_offset * row_height
-            for qubit in range(num_qubits):
-                memory_count = memory_bins[row_offset][qubit]
-                intermediate_count = intermediate_bins[row_offset][qubit]
+            for qubit_bin in range(qubit_bin_count):
+                memory_count = memory_bins[row_offset][qubit_bin]
+                intermediate_count = intermediate_bins[row_offset][qubit_bin]
                 if memory_count == 0 and intermediate_count == 0:
                     continue
-                x = x0 + qubit * column_width
+                x = x0 + qubit_bin * column_width
                 out.write(
                     f'    <rect x="{x}" y="{y}" width="{column_width}" height="{row_height}" '
                     f'fill="{usage_to_color(memory_count, intermediate_count, max_usage)}"/>\n'
@@ -413,15 +452,18 @@ def render_svg(
             f'    <line x1="{x0}" y1="{y0}" x2="{x0}" y2="{y0 + bitmap_height}" stroke="black" stroke-width="1"/>\n'
         )
 
-        x_tick_count = min(6, max(2, num_qubits))
+        x_tick_count = min(6, max(2, qubit_bin_count))
         for tick_idx in range(x_tick_count):
-            qubit_value = 0 if x_tick_count == 1 else round((num_qubits - 1) * tick_idx / (x_tick_count - 1))
-            tick_x = x0 + qubit_value * column_width
+            bin_value = 0 if x_tick_count == 1 else round((qubit_bin_count - 1) * tick_idx / (x_tick_count - 1))
+            qubit_start = bin_value * qubit_bin_size
+            qubit_end = min(num_qubits - 1, qubit_start + qubit_bin_size - 1)
+            tick_x = x0 + bin_value * column_width
             out.write(
                 f'    <line x1="{tick_x}" y1="{y0 + bitmap_height}" x2="{tick_x}" y2="{y0 + bitmap_height + 5}" stroke="black" stroke-width="1"/>\n'
             )
+            tick_label = f"{qubit_start}"
             out.write(
-                f'    <text x="{tick_x}" y="{y0 + bitmap_height + small_font_size + 8}" text-anchor="middle">{qubit_value}</text>\n'
+                f'    <text x="{tick_x}" y="{y0 + bitmap_height + small_font_size + 8}" text-anchor="middle">{tick_label}</text>\n'
             )
 
         y_tick_count = min(6, max(2, row_count))
@@ -437,7 +479,7 @@ def render_svg(
             )
 
         out.write(
-            f'    <text x="{x0 + bitmap_width / 2}" y="{y0 + bitmap_height + bottom_axis_height - 16}" text-anchor="middle" font-size="{font_size}">qubits</text>\n'
+            f'    <text x="{x0 + bitmap_width / 2}" y="{y0 + bitmap_height + bottom_axis_height - 16}" text-anchor="middle" font-size="{font_size}">qubits (bin size = {qubit_bin_size})</text>\n'
         )
         out.write(
             f'    <text x="{margin + font_size * 0.9}" y="{y0 + bitmap_height / 2}" text-anchor="middle" font-size="{font_size}" transform="rotate(-90 {margin + font_size * 0.9} {y0 + bitmap_height / 2})">instructions (bin size = {instruction_bin_size})</text>\n'
@@ -476,6 +518,8 @@ def main() -> None:
         raise SystemExit("--end must be greater than --start")
     if args.instruction_bin_size <= 0:
         raise SystemExit("--instruction-bin-size must be positive")
+    if args.qubit_bin_size <= 0:
+        raise SystemExit("--qubit-bin-size must be positive")
     if args.column_width <= 0 or args.row_height <= 0:
         raise SystemExit("--column-width and --row-height must be positive")
 
@@ -483,7 +527,7 @@ def main() -> None:
         args.input_file, args.start, args.end
     )
     if not rows:
-        raise SystemExit("No MSWAP/MPLACE instructions found in the requested range")
+        raise SystemExit("No MSWAP/MPLACE/MPREFETCH instructions found in the requested range")
 
     num_qubits = infer_num_qubits(header_num_qubits, rows)
     compute_capacity, intermediate_capacity = resolve_capacities(
@@ -502,6 +546,11 @@ def main() -> None:
         compute_capacity=compute_capacity,
         intermediate_capacity=intermediate_capacity,
     )
+    memory_bins, intermediate_bins, qubit_bin_count = aggregate_qubit_bins(
+        memory_bins,
+        intermediate_bins,
+        args.qubit_bin_size,
+    )
     effective_row_height = scaled_row_height(args.row_height, args.instruction_bin_size)
     total_loads = total_memory_loads + total_intermediate_loads
     hit_rate_percentage = (
@@ -511,7 +560,7 @@ def main() -> None:
 
     default_output = Path("diagrams") / (
         f"{args.input_file.stem}_{args.start}_{'end' if args.end is None else args.end}"
-        f"_bin{args.instruction_bin_size}.svg"
+        f"_ibin{args.instruction_bin_size}_qbin{args.qubit_bin_size}.svg"
     )
     output_file = args.output or default_output
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -522,6 +571,7 @@ def main() -> None:
         memory_bins=memory_bins,
         intermediate_bins=intermediate_bins,
         num_qubits=num_qubits,
+        qubit_bin_size=args.qubit_bin_size,
         start=args.start,
         end=args.end,
         instruction_bin_size=args.instruction_bin_size,
@@ -537,6 +587,7 @@ def main() -> None:
 
     print(f"Wrote {output_file}")
     print(f"Binned rows: {len(memory_bins)}")
+    print(f"Binned columns: {qubit_bin_count}")
     print(f"Qubits: {num_qubits}")
     print(f"Compute capacity: {compute_capacity}")
     print(f"Intermediate capacity: {intermediate_capacity}")

@@ -18,7 +18,9 @@ namespace sim
 
 namespace {
 
-constexpr int check_yokes_if_idol_for = 3;
+constexpr int check_yokes_if_idol_for = 10;
+constexpr size_t max_mem_ops_between_yoke_checks = 16;
+constexpr double error_rate_warning_threshold = 1e-15;
 
 size_t grid_length(size_t logical_qubit_count) {
     // Grid length must be a multiple of 4. Finds the smallest multiple of 4 that suffices.
@@ -97,7 +99,8 @@ long YOKED_COLD_STORAGE::operate() {
         }
         break;
     case MEMORY_OPS:
-        if (cycle_available_[0] + check_yokes_if_idol_for <= current_cycle()) {
+        if (cycle_available_[0] + check_yokes_if_idol_for <= current_cycle()
+            || s_mem_ops_this_phase_ >= max_mem_ops_between_yoke_checks) {
             // Flush this phase's op count before switching back to CHECK_YOKE.
             if (s_mem_ops_this_phase_ > 0) {
                 s_total_mem_ops_active_ += s_mem_ops_this_phase_;
@@ -116,9 +119,16 @@ long YOKED_COLD_STORAGE::operate() {
 void YOKED_COLD_STORAGE::error_stats() {
     std::cout << "YOKED_COLD_STORAGE Error Stats:\n";
     std::cout << "RMQ r per yoke cycle: " << std::pow(sum_rpow4_ / ro_, 0.25) << " vs an ideal " << yoke_cycle_rounds_ << "\n";
-    std::cout << "Per logical-qubit round error rate:" << std::scientific << (sum_rpow4_ * pow(grid_length_, 4) 
-    * std::pow(150.0, -static_cast<double>(inner_code_distance_)) / 50000.0) 
-    / (current_cycle() * effective_code_distance_ * ((grid_length_-2)*(grid_length_-2)-2))<<'\n';
+    const double logical_round_error_rate =
+        (sum_rpow4_ * pow(grid_length_, 4)
+        * std::pow(150.0, -static_cast<double>(inner_code_distance_)) / 50000.0)
+        / (current_cycle() * effective_code_distance_ * ((grid_length_-2)*(grid_length_-2)-2));
+    std::cout << "Per logical-qubit round error rate:" << std::scientific
+              << logical_round_error_rate << '\n';
+    if (logical_round_error_rate > error_rate_warning_threshold) {
+        std::cerr << "[YOKED_COLD_STORAGE] logical-qubit round error rate exceeded threshold: "
+                  << logical_round_error_rate << " > " << error_rate_warning_threshold << "\n";
+    }
     if (s_active_mem_phases_ > 0) {
         const double avg = static_cast<double>(s_total_mem_ops_active_) / s_active_mem_phases_;
         std::cout << "Avg mem ops per active MEMORY_OPS phase: " << avg

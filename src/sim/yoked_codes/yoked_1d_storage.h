@@ -87,6 +87,12 @@ class YOKED_1D_STORAGE : public sim::STORAGE
     uint64_t s_prefetches_executed{0};  // Successfully executed prefetches
     uint64_t s_prefetches_elided{0};              // Prefetches dropped as stale at execution time
     uint64_t s_prefetches_elided_ld_in_compute{0}; // Elided because ld already reached compute
+
+    // Statistics for time between consecutive 1D-side memory op starts.
+    uint64_t s_memory_op_starts{0};
+    uint64_t s_inter_memory_op_start_cycles{0};
+    cycle_type last_memory_op_start_cycle_{0};
+    bool has_last_memory_op_start_cycle_{false};
   
     enum PHASE {
         CHECK_YOKE,
@@ -108,6 +114,9 @@ class YOKED_1D_STORAGE : public sim::STORAGE
   private:
     MEMORY_SUBSYSTEM* memory_subsystem_;
 
+    void finalize_yoke_check();
+    void begin_idle_yoke_check();
+    void record_memory_op_start();
     void execute_prefetch();
 };
 

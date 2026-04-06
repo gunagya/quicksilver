@@ -177,8 +177,8 @@ COMPUTE_BASE::do_memory_access(inst_ptr inst, QUBIT* ld, QUBIT* st)
             local_memory_->print_adapter_debug_info(std::cerr);
             std::cerr << _die{};
         }
-        _update_available_cycle({ld, st}, current_cycle() + result.latency + 2);
-        return execute_result_type{.progress=1, .latency=result.latency+2};
+        _update_available_cycle({ld, st}, current_cycle() + result.latency);
+        return execute_result_type{.progress=1, .latency=result.latency};
     }
     return execute_result_type{};
 }

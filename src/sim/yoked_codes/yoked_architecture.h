@@ -17,8 +17,10 @@
 #include "globals.h"
 
 #include <map>
-#include <vector>
 #include <queue>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace sim
 {
@@ -62,7 +64,7 @@ class YOKED_ARCHITECTURE: public COMPUTE_BASE
     std::map<QUBIT*, bool> can_operate_non_clifford_; 
 
     YOKED_1D_STORAGE* yoked_1d_storage_ = nullptr;
-    std::vector<uint64_t> s_memory_ops_per_250_cycles_;
+    std::vector<std::unordered_set<QUBIT*>> s_unique_loaded_qubits_per_250_cycles_;
 
     // Statistics for tracking 1D storage effectiveness
     uint64_t s_1d_loads{0};     // Loads from 1D storage
@@ -72,8 +74,12 @@ class YOKED_ARCHITECTURE: public COMPUTE_BASE
     uint64_t s_total_1d_to_ready_delay{0};   // Cumulative delay from 1D load to non-Clifford ready (only unverified-at-load qubits)
     uint64_t s_1d_loads_delayed{0};          // 1D loads where verification had not yet completed at load time
     uint64_t s_1d_loads_already_ready{0};    // 1D loads where qubit was already verified at load time
+    uint64_t s_total_non_clifford_only_instruction_delay{0};
+    uint64_t s_instructions_considered_for_non_clifford_delay{0};
+    std::unordered_map<inst_ptr, cycle_type> non_clifford_only_block_start_cycle_;
+    std::unordered_map<inst_ptr, cycle_type> non_clifford_only_instruction_delay_;
 
-    void record_memory_op_bucket();
+    void record_memory_op_bucket(QUBIT* ld);
     void retire_instruction(CLIENT* c, inst_ptr inst, cycle_type inst_latency);
 
   public:

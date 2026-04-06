@@ -1,0 +1,38 @@
+./qs_gen_binary ../bisquit/qasm/c2h4o_ethylene_oxide_q_select.qasm ../benchmarks/bin/BQ_c2h4o_ethylene_oxide_q_select.bin
+
+xz -zk ../benchmarks/bin/BQ_c2h4o_ethylene_oxide_q_select.bin
+
+./qs_memory_scheduler ../benchmarks/bin/BQ_c2h4o_ethylene_oxide_q_select.xz ../benchmarks/bin/mem/firstpass/ethylene_oxide_q/ethylene_oxide_q_select_c4.bin -c 4
+
+./qs_report ../benchmarks/bin/mem/firstpass/ethylene_oxide_q/ethylene_oxide_q_select_c4.bin
+
+Ideal compute:
+./yoked_simulator ../benchmarks/bin/BQ_c2h4o_ethylene_oxide_q_select.xz 1000000 -a 289
+
+Ideal memory:
+./yoked_simulator ../benchmarks/bin/mem/firstpass/ethylene_oxide_q/ethylene_oxide_q_select_c4.bin 1000000 -a 4 --baseline 1
+
+Baseline:
+./yoked_simulator ../benchmarks/bin/mem/firstpass/ethylene_oxide_q/ethylene_oxide_q_select_c4.bin 1000000 -a 4 -i 0
+
+Cache secondpass:
+./qs_memory_scheduler \
+  dummy_in.bin dummy_out.bin \
+  --enable-rri-placer \
+  --rri-input ../benchmarks/bin/mem/firstpass/ethylene_oxide_q/ethylene_oxide_q_select_c4.bin \
+  --rri-output-file ../benchmarks/bin/mem/secondpass/cache/ethylene_oxide_q/ethylene_oxide_q_select_i8_c4_rri.bin \
+  --rri-intermediate-capacity 8 \
+  --rri-eviction-policy rri \
+  --rri-layer-type unweighted \
+  -c 4
+
+Prefetch secondpass:
+./qs_memory_scheduler \
+  dummy_in.bin dummy_out.bin \
+  --enable-singlepass-prefetch \
+  --singlepass-prefetch-input ../benchmarks/bin/mem/firstpass/ethylene_oxide_q/ethylene_oxide_q_select_c4.bin \
+  --singlepass-prefetch-output-file ../benchmarks/bin/mem/secondpass/prefetch/ethylene_oxide_q/ethylene_oxide_q_select_i8_c4_rri.bin \
+  --singlepass-prefetch-intermediate-capacity 8 \
+  --singlepass-prefetch-eviction-policy rri \
+  --singlepass-prefetch-layer-type weighted \
+  --singlepass-prefetch-min-layer-distance 100 -c 4

@@ -136,9 +136,12 @@ YOKED_ARCHITECTURE::fetch_and_execute_instructions_from_client(CLIENT* c)
                                 if (is_prefetch_instruction(inst->type))
                                     return false;
 
-                                bool ready = true;
+                                const inst_ptr inst_ptr_mut = const_cast<sim::CLIENT::inst_ptr>(inst);
+                                bool ready_without_non_clifford = true;
+                                bool requires_non_clifford_ready = false;
+                                bool non_clifford_ready = true;
                                 // Check if all qubits are available.
-                                ready &= std::all_of(inst->q_begin(), inst->q_end(),
+                                ready_without_non_clifford &= std::all_of(inst->q_begin(), inst->q_end(),
                                             [&c, cc] (auto q_id) { return c->qubits()[q_id]->cycle_available <= cc; });
                                 // Check if memory request can be served.
                                 if (is_memory_access(inst->type)) {
@@ -146,13 +149,13 @@ YOKED_ARCHITECTURE::fetch_and_execute_instructions_from_client(CLIENT* c)
                                         // MPLACE needs both cold adapter (for ld) AND
                                         // 1D adapter (for evict_1d) simultaneously.
                                         QUBIT* ld_qubit = memory_hierarchy_->retrieve_qubit(0, inst->q_begin()[0]);
-                                        ready &= (ld_qubit != nullptr)
+                                        ready_without_non_clifford &= (ld_qubit != nullptr)
                                             && (*memory_hierarchy_->lookup(ld_qubit))->has_free_adapter();
-                                        ready &= (yoked_1d_storage_ != nullptr)
+                                        ready_without_non_clifford &= (yoked_1d_storage_ != nullptr)
                                             && yoked_1d_storage_->has_free_adapter();
                                     } else {
                                         QUBIT* fetched_qubit = memory_hierarchy_->retrieve_qubit(0, inst->q_begin()[0]);
-                                        ready &= (*memory_hierarchy_->lookup(fetched_qubit))->has_free_adapter();
+                                        ready_without_non_clifford &= (*memory_hierarchy_->lookup(fetched_qubit))->has_free_adapter();
                                     }
                                 } else {
                                     // Check if all qubits are in local memory for non-memory instructions.
@@ -167,18 +170,34 @@ YOKED_ARCHITECTURE::fetch_and_execute_instructions_from_client(CLIENT* c)
                                 if (is_t_like_instruction(inst->type) 
                                     || is_rotation_instruction(inst->type) && is_t_like_instruction(inst->current_uop()->type)
                                     || is_toffoli_like_instruction(inst->type) && is_t_like_instruction(inst->current_uop()->type)) {
-                                    ready &= count_available_magic_states() > 0;
-                                    ready &= can_operate_non_clifford_.at(c->qubits()[inst->q_begin()[0]]);
+                                    ready_without_non_clifford &= count_available_magic_states() > 0;
+                                    requires_non_clifford_ready = true;
+                                    non_clifford_ready &= can_operate_non_clifford_.at(c->qubits()[inst->q_begin()[0]]);
                                 }
 
                                 if (is_cx_like_instruction(inst->type) 
                                     || is_toffoli_like_instruction(inst->type) && is_cx_like_instruction(inst->current_uop()->type)) {
                                     // For CX-like gates, ensure both control and target are ready for non-Clifford operations
-                                    ready &= can_operate_non_clifford_.at(c->qubits()[inst->q_begin()[0]]); // control
-                                    ready &= can_operate_non_clifford_.at(c->qubits()[inst->q_begin()[1]]); // target
+                                    requires_non_clifford_ready = true;
+                                    non_clifford_ready &= can_operate_non_clifford_.at(c->qubits()[inst->q_begin()[0]]); // control
+                                    non_clifford_ready &= can_operate_non_clifford_.at(c->qubits()[inst->q_begin()[1]]); // target
                                 }
 
-                                return ready;
+                                const bool blocked_only_by_non_clifford =
+                                    ready_without_non_clifford
+                                    && requires_non_clifford_ready
+                                    && !non_clifford_ready;
+
+                                auto active_it = non_clifford_only_block_start_cycle_.find(inst_ptr_mut);
+                                if (blocked_only_by_non_clifford) {
+                                    if (active_it == non_clifford_only_block_start_cycle_.end())
+                                        non_clifford_only_block_start_cycle_[inst_ptr_mut] = current_cycle();
+                                } else if (active_it != non_clifford_only_block_start_cycle_.end()) {
+                                    non_clifford_only_instruction_delay_[inst_ptr_mut] += current_cycle() - active_it->second;
+                                    non_clifford_only_block_start_cycle_.erase(active_it);
+                                }
+
+                                return ready_without_non_clifford && non_clifford_ready;
                             });
 
     // print_deadlock_info(std::cout, front_layer);
@@ -234,7 +253,7 @@ YOKED_ARCHITECTURE::do_memory_access(inst_ptr inst, QUBIT* ld, QUBIT* st)
     auto result = COMPUTE_BASE::do_memory_access(inst, ld, st);
     
     if (result.progress) {
-        record_memory_op_bucket();
+        record_memory_op_bucket(ld);
 
         // Track statistics
         if (is_1d_load) {
@@ -302,7 +321,7 @@ YOKED_ARCHITECTURE::do_placement_access(inst_ptr inst, QUBIT* ld, QUBIT* st, QUB
     evict_1d->cycle_available = std::max(evict_1d->cycle_available, current_cycle() + total_latency);
 
     // Stats:
-    record_memory_op_bucket();
+    record_memory_op_bucket(ld);
     // ld arrives from cold — counted separately from plain cold MSWAP.
     s_mplace_loads++;
     // can_operate_non_clifford_ for ld remains false (was false in cold);
@@ -315,17 +334,27 @@ YOKED_ARCHITECTURE::do_placement_access(inst_ptr inst, QUBIT* ld, QUBIT* st, QUB
 ////////////////////////////////////////////////////////////
 
 void
-YOKED_ARCHITECTURE::record_memory_op_bucket()
+YOKED_ARCHITECTURE::record_memory_op_bucket(QUBIT* ld)
 {
     const size_t bucket = current_cycle() / 200;
-    if (bucket >= s_memory_ops_per_250_cycles_.size())
-        s_memory_ops_per_250_cycles_.resize(bucket + 1, 0);
-    s_memory_ops_per_250_cycles_[bucket]++;
+    if (bucket >= s_unique_loaded_qubits_per_250_cycles_.size())
+        s_unique_loaded_qubits_per_250_cycles_.resize(bucket + 1);
+    s_unique_loaded_qubits_per_250_cycles_[bucket].insert(ld);
 }
 
 void
 YOKED_ARCHITECTURE::retire_instruction(CLIENT* c, inst_ptr inst, cycle_type inst_latency)
 {
+    auto active_it = non_clifford_only_block_start_cycle_.find(inst);
+    if (active_it != non_clifford_only_block_start_cycle_.end()) {
+        non_clifford_only_instruction_delay_[inst] += current_cycle() - active_it->second;
+        non_clifford_only_block_start_cycle_.erase(active_it);
+    }
+
+    s_total_non_clifford_only_instruction_delay += non_clifford_only_instruction_delay_[inst];
+    s_instructions_considered_for_non_clifford_delay++;
+    non_clifford_only_instruction_delay_.erase(inst);
+
     inst->cycle_done = current_cycle() + inst_latency;
     c->retire_instruction(inst);
 }
@@ -414,65 +443,87 @@ YOKED_ARCHITECTURE::print_yoked_storage_stats()
         print_stat_line(std::cout, "Avg delay: 1D load to non-Clifford ready (cycles)", 0.0);
     }
 
-    if (!s_memory_ops_per_250_cycles_.empty()) {
-        const double mean_memory_ops_per_250_cycles =
-            static_cast<double>(std::accumulate(s_memory_ops_per_250_cycles_.begin(),
-                                                s_memory_ops_per_250_cycles_.end(),
-                                                uint64_t{0}))
-            / s_memory_ops_per_250_cycles_.size();
+    const double avg_non_clifford_only_instruction_delay =
+        s_instructions_considered_for_non_clifford_delay > 0
+            ? static_cast<double>(s_total_non_clifford_only_instruction_delay)
+                / s_instructions_considered_for_non_clifford_delay
+            : 0.0;
+    print_stat_line(std::cout,
+                    "Avg instruction delay due only to non-Clifford readiness (cycles)",
+                    avg_non_clifford_only_instruction_delay);
 
-        auto sorted_buckets = s_memory_ops_per_250_cycles_;
+    if (!s_unique_loaded_qubits_per_250_cycles_.empty()) {
+        std::vector<uint64_t> bucket_counts;
+        bucket_counts.reserve(s_unique_loaded_qubits_per_250_cycles_.size());
+        for (const auto& bucket : s_unique_loaded_qubits_per_250_cycles_)
+            bucket_counts.push_back(bucket.size());
+
+        const double mean_unique_loaded_qubits_per_250_cycles =
+            static_cast<double>(std::accumulate(bucket_counts.begin(),
+                                                bucket_counts.end(),
+                                                uint64_t{0}))
+            / bucket_counts.size();
+
+        auto sorted_buckets = bucket_counts;
         std::sort(sorted_buckets.begin(), sorted_buckets.end());
-        double median_memory_ops_per_250_cycles;
+        double median_unique_loaded_qubits_per_250_cycles;
         const size_t mid = sorted_buckets.size() / 2;
         if (sorted_buckets.size() % 2 == 0) {
-            median_memory_ops_per_250_cycles =
+            median_unique_loaded_qubits_per_250_cycles =
                 (static_cast<double>(sorted_buckets[mid - 1]) + sorted_buckets[mid]) / 2.0;
         } else {
-            median_memory_ops_per_250_cycles = sorted_buckets[mid];
+            median_unique_loaded_qubits_per_250_cycles = sorted_buckets[mid];
         }
 
-        print_stat_line(std::cout, "Mean memory ops per 200 cycles", mean_memory_ops_per_250_cycles);
-        print_stat_line(std::cout, "Median memory ops per 200 cycles", median_memory_ops_per_250_cycles);
+        print_stat_line(std::cout,
+                        "Mean unique qubits loaded per 200 cycles",
+                        mean_unique_loaded_qubits_per_250_cycles);
+        print_stat_line(std::cout,
+                        "Median unique qubits loaded per 200 cycles",
+                        median_unique_loaded_qubits_per_250_cycles);
 
         std::vector<uint64_t> nonzero_buckets;
-        std::copy_if(s_memory_ops_per_250_cycles_.begin(),
-                     s_memory_ops_per_250_cycles_.end(),
+        std::copy_if(bucket_counts.begin(),
+                     bucket_counts.end(),
                      std::back_inserter(nonzero_buckets),
                      [] (uint64_t count) { return count > 0; });
 
         if (!nonzero_buckets.empty()) {
-            const double mean_nonzero_memory_ops_per_250_cycles =
+            const double mean_nonzero_unique_loaded_qubits_per_250_cycles =
                 static_cast<double>(std::accumulate(nonzero_buckets.begin(),
                                                     nonzero_buckets.end(),
                                                     uint64_t{0}))
                 / nonzero_buckets.size();
 
             std::sort(nonzero_buckets.begin(), nonzero_buckets.end());
-            double median_nonzero_memory_ops_per_250_cycles;
+            double median_nonzero_unique_loaded_qubits_per_250_cycles;
             const size_t mid_nonzero = nonzero_buckets.size() / 2;
             if (nonzero_buckets.size() % 2 == 0) {
-                median_nonzero_memory_ops_per_250_cycles =
+                median_nonzero_unique_loaded_qubits_per_250_cycles =
                     (static_cast<double>(nonzero_buckets[mid_nonzero - 1]) + nonzero_buckets[mid_nonzero]) / 2.0;
             } else {
-                median_nonzero_memory_ops_per_250_cycles = nonzero_buckets[mid_nonzero];
+                median_nonzero_unique_loaded_qubits_per_250_cycles = nonzero_buckets[mid_nonzero];
             }
 
             print_stat_line(std::cout,
-                            "Mean memory ops per 250 cycles (non-zero windows)",
-                            mean_nonzero_memory_ops_per_250_cycles);
+                            "Mean unique qubits loaded per 200 cycles (non-zero windows)",
+                            mean_nonzero_unique_loaded_qubits_per_250_cycles);
             print_stat_line(std::cout,
-                            "Median memory ops per 250 cycles (non-zero windows)",
-                            median_nonzero_memory_ops_per_250_cycles);
+                            "Median unique qubits loaded per 200 cycles (non-zero windows)",
+                            median_nonzero_unique_loaded_qubits_per_250_cycles);
         } else {
-            print_stat_line(std::cout, "Mean memory ops per 250 cycles (non-zero windows)", 0.0);
-            print_stat_line(std::cout, "Median memory ops per 250 cycles (non-zero windows)", 0.0);
+            print_stat_line(std::cout,
+                            "Mean unique qubits loaded per 200 cycles (non-zero windows)",
+                            0.0);
+            print_stat_line(std::cout,
+                            "Median unique qubits loaded per 200 cycles (non-zero windows)",
+                            0.0);
         }
     } else {
-        print_stat_line(std::cout, "Mean memory ops per 250 cycles", 0.0);
-        print_stat_line(std::cout, "Median memory ops per 250 cycles", 0.0);
-        print_stat_line(std::cout, "Mean memory ops per 250 cycles (non-zero windows)", 0.0);
-        print_stat_line(std::cout, "Median memory ops per 250 cycles (non-zero windows)", 0.0);
+        print_stat_line(std::cout, "Mean unique qubits loaded per 200 cycles", 0.0);
+        print_stat_line(std::cout, "Median unique qubits loaded per 200 cycles", 0.0);
+        print_stat_line(std::cout, "Mean unique qubits loaded per 200 cycles (non-zero windows)", 0.0);
+        print_stat_line(std::cout, "Median unique qubits loaded per 200 cycles (non-zero windows)", 0.0);
     }
     
     // Print error stats for all yoked storages

@@ -67,6 +67,13 @@ gate ch a, b
     sx b;
 }
 
+gate cy a, b
+{
+    sdg b;
+    cx a, b;
+    s b;
+}
+
 //////////////////////////////////////
 //  CONTROLLED UNITARY GATES        //
 //////////////////////////////////////
