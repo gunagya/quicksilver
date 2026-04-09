@@ -70,13 +70,18 @@ YOKED_ARCHITECTURE::operate()
                 // Only mark ready if the qubit is not in cold storage.
                 if (local_memory_->contains(q) || (yoked_1d_storage_!=nullptr && yoked_1d_storage_->contains(q))) {
                     can_operate_non_clifford_[q] = true;
-                    // Track delay only if in compute
+                    if (qubit_2d_load_cycle_.count(q) > 0) {
+                        s_total_2d_to_ready_delay += current_cycle() - qubit_2d_load_cycle_[q];
+                        s_2d_loads_delayed++;
+                    }
+                    // Track 1D delay only if the qubit has already been loaded into compute.
                     if (local_memory_->contains(q) && qubit_1d_load_cycle_.count(q) > 0) {
                         s_total_1d_to_ready_delay += current_cycle() - qubit_1d_load_cycle_[q];
                         s_1d_loads_delayed++;
                     }
                 }
                 qubit_1d_load_cycle_.erase(q);
+                qubit_2d_load_cycle_.erase(q);
             }
             for (QUBIT* q : yoked_cold_storage->drain_newly_stored_qubits())
                 can_operate_non_clifford_[q] = false;
@@ -179,8 +184,11 @@ YOKED_ARCHITECTURE::fetch_and_execute_instructions_from_client(CLIENT* c)
                                     || is_toffoli_like_instruction(inst->type) && is_cx_like_instruction(inst->current_uop()->type)) {
                                     // For CX-like gates, ensure both control and target are ready for non-Clifford operations
                                     requires_non_clifford_ready = true;
-                                    non_clifford_ready &= can_operate_non_clifford_.at(c->qubits()[inst->q_begin()[0]]); // control
-                                    non_clifford_ready &= can_operate_non_clifford_.at(c->qubits()[inst->q_begin()[1]]); // target
+                                    auto curr_inst = inst;
+                                    if (is_toffoli_like_instruction(inst->type))
+                                        curr_inst = inst->current_uop();
+                                    non_clifford_ready &= can_operate_non_clifford_.at(c->qubits()[curr_inst->q_begin()[0]]); // control
+                                    non_clifford_ready &= can_operate_non_clifford_.at(c->qubits()[curr_inst->q_begin()[1]]); // target
                                 }
 
                                 const bool blocked_only_by_non_clifford =
@@ -267,6 +275,7 @@ YOKED_ARCHITECTURE::do_memory_access(inst_ptr inst, QUBIT* ld, QUBIT* st)
             }
         } else if (is_2d_load) {
             s_2d_loads++;
+            qubit_2d_load_cycle_[ld] = current_cycle();
         }
     }
     
@@ -324,6 +333,7 @@ YOKED_ARCHITECTURE::do_placement_access(inst_ptr inst, QUBIT* ld, QUBIT* st, QUB
     record_memory_op_bucket(ld);
     // ld arrives from cold — counted separately from plain cold MSWAP.
     s_mplace_loads++;
+    qubit_2d_load_cycle_[ld] = current_cycle();
     // can_operate_non_clifford_ for ld remains false (was false in cold);
     // evict_1d going to cold is handled by drain_newly_stored_qubits() in operate().
 
@@ -441,6 +451,15 @@ YOKED_ARCHITECTURE::print_yoked_storage_stats()
         print_stat_line(std::cout, "1D loads: already verified at load time",  s_1d_loads_already_ready);
         print_stat_line(std::cout, "1D loads: needed to wait for verification", 0UL);
         print_stat_line(std::cout, "Avg delay: 1D load to non-Clifford ready (cycles)", 0.0);
+    }
+
+    if (s_2d_loads_delayed > 0) {
+        double avg_delay = static_cast<double>(s_total_2d_to_ready_delay) / s_2d_loads_delayed;
+        print_stat_line(std::cout, "2D/cold loads: reached non-Clifford ready", s_2d_loads_delayed);
+        print_stat_line(std::cout, "Avg delay: 2D/cold load to non-Clifford ready (cycles)", avg_delay);
+    } else {
+        print_stat_line(std::cout, "2D/cold loads: reached non-Clifford ready", 0UL);
+        print_stat_line(std::cout, "Avg delay: 2D/cold load to non-Clifford ready (cycles)", 0.0);
     }
 
     const double avg_non_clifford_only_instruction_delay =

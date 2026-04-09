@@ -71,9 +71,12 @@ class YOKED_ARCHITECTURE: public COMPUTE_BASE
     uint64_t s_2d_loads{0};     // Loads from 2D storage (cold MSWAP)
     uint64_t s_mplace_loads{0}; // Loads from 2D storage via MPLACE (includes 1D eviction)
     std::map<QUBIT*, cycle_type> qubit_1d_load_cycle_;  // Track when qubits loaded from 1D
+    std::map<QUBIT*, cycle_type> qubit_2d_load_cycle_;  // Track when qubits loaded from 2D/cold storage
     uint64_t s_total_1d_to_ready_delay{0};   // Cumulative delay from 1D load to non-Clifford ready (only unverified-at-load qubits)
     uint64_t s_1d_loads_delayed{0};          // 1D loads where verification had not yet completed at load time
     uint64_t s_1d_loads_already_ready{0};    // 1D loads where qubit was already verified at load time
+    uint64_t s_total_2d_to_ready_delay{0};   // Cumulative delay from 2D/cold load to non-Clifford ready
+    uint64_t s_2d_loads_delayed{0};          // 2D/cold loads that later became non-Clifford ready
     uint64_t s_total_non_clifford_only_instruction_delay{0};
     uint64_t s_instructions_considered_for_non_clifford_delay{0};
     std::unordered_map<inst_ptr, cycle_type> non_clifford_only_block_start_cycle_;

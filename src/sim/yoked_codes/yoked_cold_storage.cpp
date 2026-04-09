@@ -18,8 +18,8 @@ namespace sim
 
 namespace {
 
-constexpr int check_yokes_if_idol_for = 10;
-constexpr size_t max_mem_ops_between_yoke_checks = 16;
+constexpr int check_yokes_if_idol_for = 13;
+constexpr size_t max_mem_ops_between_yoke_checks = 8;
 constexpr double error_rate_warning_threshold = 1e-15;
 
 size_t grid_length(size_t logical_qubit_count) {
