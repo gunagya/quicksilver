@@ -42,16 +42,15 @@ MEM_FIRSTPASS_DIR = MEM_DIR / "firstpass"
 MEM_SECONDPASS_PREFETCH_DIR = MEM_DIR / "secondpass" / "prefetch"
 
 COMPUTE_CAPACITIES  = [4]   # -c / -a values to sweep
-SIM_INSTRUCTIONS    = 100_000_000   # second positional arg to yoked_simulator
+SIM_INSTRUCTIONS    = 1_000_000   # second positional arg to yoked_simulator
 SINGLEPASS_PREFETCH_POLICIES = ["lru", "rri"]
 SINGLEPASS_PREFETCH_LAYER_TYPE = "weighted"
-PRINT_PROGRESS_FREQUENCY = 10_000_000
-SECOND_PASS_INST_LIMIT_DELTA = 1_000_000
+SECOND_PASS_INST_LIMIT_DELTA = 500_000
 
 # For each intermediate storage size, the MLD values to sweep.
 # Edit the lists here to control which (cap, mld) pairs are compiled + simulated.
 INTERMEDIATE_MLD_MAP: dict[int, list[int]] = {
-    8:  [50, 100, 150, 200],
+    8:  [0, 50, 100, 150, 200],
 }
 
 # Benchmarks: (raw_binary_filename, factory_phys_qubit_budget, label[, compile_inst_limit[, sim_instructions]])
@@ -59,32 +58,30 @@ INTERMEDIATE_MLD_MAP: dict[int, list[int]] = {
 BENCHMARKS = [
     ("BQ_bose_hubbard_q.xz",                     50_000, "bose_hubbard_q"),
     ("BQ_bose_hubbard_t.xz",                     50_000, "bose_hubbard_t"),
-    ("BQ_c2h4o_ethylene_oxide_q.xz",                       50_000, "ethylene_oxide_q"),
-    ("BQ_c2h4o_ethylene_oxide_t.xz",                       50_000, "ethylene_oxide_t"),
-    ("BQ_chromium_q.xz",                          50_000, "chromium_q"),
-    ("BQ_chromium_t.xz",                          50_000, "chromium_t"),
-    ("BQ_hc3h2cn_q.xz",                          50_000, "hc3h2cn_q"),
-    ("BQ_hc3h2cn_t.xz",                          50_000, "hc3h2cn_t"),
-    ("BQ_manganese_nitride_q.xz",              50_000, "manganese_nitride_q"),
-    ("BQ_manganese_nitride_t.xz",              50_000, "manganese_nitride_t"),
-    # ("shor_modmult_N16777259_a3_pow0.bin",               50_000, "shor_rsa24"),
-    ("BQ_grover_3sat_schoning_1710.xz",                 50_000, "grover_3sat"),
+    ("BQ_c2h4o_ethylene_oxide_q_prepare.xz",     50_000, "ethylene_oxide_q_prepare"),
+    ("BQ_c2h4o_ethylene_oxide_q_select.xz",      50_000, "ethylene_oxide_q_select"),
+    ("BQ_c2h4o_ethylene_oxide_t.xz",             50_000, "ethylene_oxide_t"),
+    ("BQ_chromium_q_prepare.xz",                 50_000, "chromium_q_prepare"),
+    ("BQ_chromium_q_select.xz",                  50_000, "chromium_q_select"),
+    ("BQ_chromium_t.xz",                         50_000, "chromium_t"),
+    ("shor_modmult_N16777259_a3_pow0.bin",       50_000, "shor_rsa24"),
+    ("BQ_grover_3sat_schoning_1710.xz",          50_000, "grover_3sat"),
 ]
 
 # Memory-scheduler compile limits (instructions compiled per run)
-MS_INST_LIMIT = 200_000_000
+MS_INST_LIMIT = 3_000_000
 
 ############################################################
 # Helpers
 ############################################################
 
 def run(cmd: list[str], desc: str) -> str | None:
-    """Run a subprocess and return stdout, or None on failure."""
+    """Run a subprocess and return combined stdout/stderr, or None on failure."""
     print(f"\n>>> {desc}")
     print("    " + " ".join(str(x) for x in cmd))
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        return r.stdout
+        return (r.stdout or "") + (("\n" + r.stderr) if r.stderr else "")
     except subprocess.CalledProcessError as e:
         print(f"  FAILED (rc={e.returncode})")
         if e.stdout:
@@ -112,12 +109,41 @@ def istat(output, key):
     return int(float(v)) if v is not None else None
 
 
-def eif_mem_binary(label: str, compute_cap: int) -> Path:
-    return MEM_FIRSTPASS_DIR / label / f"{label}_c{compute_cap}.bin"
+def parse_excessive_error_rates(output: str | None) -> str | None:
+    if output is None:
+        return None
+    matches = re.findall(
+        r"\[(YOKED_(?:COLD|1D)_STORAGE)\] logical-qubit round error rate exceeded threshold:\s*([0-9.eE+\-]+)",
+        output,
+    )
+    if not matches:
+        return None
+    return "; ".join(f"{block}={rate}" for block, rate in matches)
 
 
-def sp_mem_binary(label: str, policy: str, cap: int, mld: int, compute_cap: int) -> Path:
-    return MEM_SECONDPASS_PREFETCH_DIR / label / f"{label}_{policy}_i{cap}_mld{mld}_c{compute_cap}.bin"
+def human_inst_limit(inst_limit: int) -> str:
+    if inst_limit % 1_000_000 == 0:
+        return f"{inst_limit // 1_000_000}M"
+    if inst_limit % 1_000 == 0:
+        return f"{inst_limit // 1_000}K"
+    return str(inst_limit)
+
+
+def eif_mem_binary(label: str, compute_cap: int, inst_limit: int) -> Path:
+    limit_tag = human_inst_limit(inst_limit)
+    return MEM_FIRSTPASS_DIR / label / f"{label}_c{compute_cap}_{limit_tag}.bin"
+
+
+def sp_mem_binary(
+    label: str,
+    policy: str,
+    cap: int,
+    mld: int,
+    compute_cap: int,
+    inst_limit: int,
+) -> Path:
+    limit_tag = human_inst_limit(inst_limit)
+    return MEM_SECONDPASS_PREFETCH_DIR / label / f"{label}_{policy}_i{cap}_mld{mld}_c{compute_cap}_{limit_tag}.bin"
 
 
 ############################################################
@@ -134,6 +160,7 @@ def append_row(rows: list[dict], row: dict, writer=None, csv_file=None):
 def simulate_firstpass_outputs(
     bm,
     compute_cap: int,
+    inst_limit: int,
     eif_mem_accesses,
     rows: list[dict],
     writer=None,
@@ -142,7 +169,7 @@ def simulate_firstpass_outputs(
     label = bm[2]
     factory_budget = bm[1]
     sim_instructions = bm[4] if len(bm) > 4 else SIM_INSTRUCTIONS
-    eif_bin = eif_mem_binary(label, compute_cap)
+    eif_bin = eif_mem_binary(label, compute_cap, inst_limit)
     if not eif_bin.exists():
         print(f"[SKIP SIM] {label} c={compute_cap}: EIF binary missing")
         return
@@ -151,7 +178,7 @@ def simulate_firstpass_outputs(
         str(sim_instructions),
         "-a", str(compute_cap),
         "-f", str(factory_budget),
-        "-pp", str(PRINT_PROGRESS_FREQUENCY),
+        "-pp", "0",
     ]
 
     baseline_out = run(
@@ -176,6 +203,7 @@ def simulate_firstpass_outputs(
         "sim_cold_miss_rate_pct": baseline_miss_rate,
         "loads_1d_not_ready_pct": None,
         "avg_1d_not_ready_delay_cycles": None,
+        "excessive_error_rates": parse_excessive_error_rates(baseline_out),
     }, writer, csv_file)
 
     eif_sim_out = run(
@@ -200,12 +228,14 @@ def simulate_firstpass_outputs(
         "sim_cold_miss_rate_pct": eif_miss_rate,
         "loads_1d_not_ready_pct": None,
         "avg_1d_not_ready_delay_cycles": None,
+        "excessive_error_rates": parse_excessive_error_rates(eif_sim_out),
     }, writer, csv_file)
 
 
 def simulate_secondpass_output(
     bm,
     compute_cap: int,
+    second_pass_inst_limit: int,
     policy: str,
     cap: int,
     mld: int,
@@ -217,7 +247,7 @@ def simulate_secondpass_output(
     label = bm[2]
     factory_budget = bm[1]
     sim_instructions = bm[4] if len(bm) > 4 else SIM_INSTRUCTIONS
-    sp_bin = sp_mem_binary(label, policy, cap, mld, compute_cap)
+    sp_bin = sp_mem_binary(label, policy, cap, mld, compute_cap, second_pass_inst_limit)
     if not sp_bin.exists():
         print(
             f"[SKIP SIM] {label} c={compute_cap} policy={policy} cap={cap} mld={mld}: "
@@ -229,7 +259,7 @@ def simulate_secondpass_output(
         str(sim_instructions),
         "-a", str(compute_cap),
         "-f", str(factory_budget),
-        "-pp", str(PRINT_PROGRESS_FREQUENCY),
+        "-pp", "0",
     ]
 
     sp_sim_out = run(
@@ -263,6 +293,7 @@ def simulate_secondpass_output(
         "sim_cold_miss_rate_pct": sp_miss_rate,
         "loads_1d_not_ready_pct": loads_not_ready_pct,
         "avg_1d_not_ready_delay_cycles": avg_delay,
+        "excessive_error_rates": parse_excessive_error_rates(sp_sim_out),
     }, writer, csv_file)
 
 
@@ -280,7 +311,7 @@ def compile_benchmark(bm, rows: list[dict], writer=None, csv_file=None):
     print(f"{'='*70}")
 
     for compute_cap in COMPUTE_CAPACITIES:
-        eif_out = eif_mem_binary(label, compute_cap)
+        eif_out = eif_mem_binary(label, compute_cap, inst_limit)
         eif_out.parent.mkdir(parents=True, exist_ok=True)
         if eif_out.exists():
             print(f"[REUSE] {label} c={compute_cap}: using existing first-pass output {eif_out}")
@@ -292,7 +323,7 @@ def compile_benchmark(bm, rows: list[dict], writer=None, csv_file=None):
                 "-c", str(compute_cap),
                 "-s", "0",
                 "-i", str(inst_limit),
-                "-pp", str(PRINT_PROGRESS_FREQUENCY),
+                "-pp", "0",
             ]
             eif_output = run(eif_cmd, f"{label} c={compute_cap}: EIF compile")
             eif_mem_accesses = istat(eif_output, "MEMORY_ACCESSES")
@@ -304,6 +335,7 @@ def compile_benchmark(bm, rows: list[dict], writer=None, csv_file=None):
         simulate_firstpass_outputs(
             bm,
             compute_cap,
+            inst_limit,
             eif_mem_accesses,
             rows,
             writer=writer,
@@ -315,7 +347,7 @@ def compile_benchmark(bm, rows: list[dict], writer=None, csv_file=None):
         for cap, mld_list in INTERMEDIATE_MLD_MAP.items():
             for mld in mld_list:
                 for policy in SINGLEPASS_PREFETCH_POLICIES:
-                    sp_out = sp_mem_binary(label, policy, cap, mld, compute_cap)
+                    sp_out = sp_mem_binary(label, policy, cap, mld, compute_cap, inst_limit)
                     sp_out.parent.mkdir(parents=True, exist_ok=True)
                     sp_cmd = [
                         "./qs_memory_scheduler",
@@ -323,7 +355,7 @@ def compile_benchmark(bm, rows: list[dict], writer=None, csv_file=None):
                         "-c", str(compute_cap),
                         "-s", "0",
                         "-i", str(second_pass_inst_limit),
-                        "-pp", str(PRINT_PROGRESS_FREQUENCY),
+                        "-pp", "0",
                         "--enable-singlepass-prefetch",
                         "--singlepass-prefetch-input", str(eif_out),
                         "--singlepass-prefetch-output-file", str(sp_out),
@@ -347,6 +379,7 @@ def compile_benchmark(bm, rows: list[dict], writer=None, csv_file=None):
                     simulate_secondpass_output(
                         bm,
                         compute_cap,
+                        inst_limit,
                         policy,
                         cap,
                         mld,
@@ -379,6 +412,7 @@ FIELDNAMES = [
     "sim_cold_miss_rate_pct",
     "loads_1d_not_ready_pct",
     "avg_1d_not_ready_delay_cycles",
+    "excessive_error_rates",
 ]
 
 

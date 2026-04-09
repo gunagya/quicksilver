@@ -39,26 +39,24 @@ MEM_SECONDPASS_DIR = RAW_BIN_DIR / "mem" / "secondpass" / "cache"
 
 ACTIVE_SET_CAPACITY = 4
 SIM_INSTRUCTIONS    = 1_000_000
-INTERMEDIATE_SIZES  = [4, 8, 12, 16]
+INTERMEDIATE_SIZES  = [8]
 EVICTION_POLICIES   = ["rri", "lru"]
 
-MS_INST_LIMIT       = 2_000_000
-SECONDPASS_INST_LIMIT_DELTA = 100_000
+MS_INST_LIMIT       = 3_000_000
+SECONDPASS_INST_LIMIT_DELTA = 500_000
 
 # Benchmarks: (raw_binary_filename, factory_phys_qubit_budget, label)
 BENCHMARKS = [
     ("BQ_bose_hubbard_q.xz",                     50_000, "bose_hubbard_q"),
     ("BQ_bose_hubbard_t.xz",                     50_000, "bose_hubbard_t"),
-    ("BQ_c2h4o_ethylene_oxide_q.xz",                       50_000, "ethylene_oxide_q"),
-    ("BQ_c2h4o_ethylene_oxide_t.xz",                       50_000, "ethylene_oxide_t"),
-    ("BQ_chromium_q.xz",                          50_000, "chromium_q"),
-    ("BQ_chromium_t.xz",                          50_000, "chromium_t"),
-    ("BQ_hc3h2cn_q.xz",                          50_000, "hc3h2cn_q"),
-    ("BQ_hc3h2cn_t.xz",                          50_000, "hc3h2cn_t"),
-    ("BQ_manganese_nitride_q.xz",              50_000, "manganese_nitride_q"),
-    ("BQ_manganese_nitride_t.xz",              50_000, "manganese_nitride_t"),
-    ("shor_modmult_N16777259_a3_pow0.bin",               50_000, "shor_rsa24"),
-    ("BQ_grover_3sat_schoning_1710.xz",                 50_000, "grover_3sat")
+    ("BQ_c2h4o_ethylene_oxide_q_prepare.xz",     50_000, "ethylene_oxide_q_prepare"),
+    ("BQ_c2h4o_ethylene_oxide_q_select.xz",      50_000, "ethylene_oxide_q_select"),
+    ("BQ_c2h4o_ethylene_oxide_t.xz",             50_000, "ethylene_oxide_t"),
+    ("BQ_chromium_q_prepare.xz",                 50_000, "chromium_q_prepare"),
+    ("BQ_chromium_q_select.xz",                  50_000, "chromium_q_select"),
+    ("BQ_chromium_t.xz",                         50_000, "chromium_t"),
+    ("shor_modmult_N16777259_a3_pow0.bin",       50_000, "shor_rsa24"),
+    ("BQ_grover_3sat_schoning_1710.xz",          50_000, "grover_3sat"),
 ]
 
 ############################################################

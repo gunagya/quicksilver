@@ -14,6 +14,12 @@ namespace sim
 namespace yoked_codes
 {
 
+namespace {
+
+constexpr size_t kFixed1DBlockRows = 2;
+
+}  // namespace
+
 ////////////////////////////////////////////////////////////
 // Error rate functions
 ////////////////////////////////////////////////////////////
@@ -107,9 +113,7 @@ std::map<size_t, OptimalBlock> precompute_optimal_blocks(
         
         // Try 1D configurations (skip if only_2d is true)
         if (!only_2d) {
-        size_t max_rows = std::min(l + 2, size_t(100));
-        
-        for (size_t rows = 1; rows <= max_rows; ++rows) {
+        const size_t rows = kFixed1DBlockRows;
             // row_length must be even and >= 4
             for (size_t row_length = 4; row_length <= l + 2; row_length += 2) {
                 size_t actual_logical = rows * (row_length - 2);
@@ -134,7 +138,6 @@ std::map<size_t, OptimalBlock> precompute_optimal_blocks(
                     best.yoke_cycle_rounds = yoke_rounds;
                 }
             }
-        }
         }  // end if (!only_2d)
         
         // Try 2D configuration
