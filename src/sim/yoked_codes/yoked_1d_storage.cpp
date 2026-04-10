@@ -275,9 +275,9 @@ void YOKED_1D_STORAGE::error_stats() {
     const double rms_r_per_yoke_cycle = ro_ > 0 ? std::sqrt(sum_rpow2_ / ro_) : 0.0;
     std::cout << "RMS r per yoke cycle: " << rms_r_per_yoke_cycle << " vs an ideal " << yoke_cycle_rounds_ << "\n";
     const double logical_round_error_rate = (ro_ > 0 && current_cycle() > 0)
-        ? (sum_rpow2_ * std::pow(row_length_, 2)
+        ? (sum_rpow2_ * std::pow(2*row_length_, 2)
             * std::pow(15.0, -static_cast<double>(inner_code_distance_)) / 100.0)
-            / (current_cycle() * effective_code_distance_ * (row_length_-2))
+            / (current_cycle() * effective_code_distance_ * (2*row_length_-2))
         : 0.0;
     std::cout << "Per logical-qubit round error rate: " << std::scientific
               << logical_round_error_rate << '\n';

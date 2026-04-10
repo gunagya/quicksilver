@@ -463,9 +463,9 @@ YOKED_ARCHITECTURE::print_yoked_storage_stats()
     }
 
     const double avg_non_clifford_only_instruction_delay =
-        s_instructions_considered_for_non_clifford_delay > 0
+        simulation_instructions_ > 0
             ? static_cast<double>(s_total_non_clifford_only_instruction_delay)
-                / s_instructions_considered_for_non_clifford_delay
+                / simulation_instructions_
             : 0.0;
     print_stat_line(std::cout,
                     "Avg instruction delay due only to non-Clifford readiness (cycles)",

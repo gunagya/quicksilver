@@ -41,7 +41,7 @@ double yoked_2d_error_rate(size_t yoke_cycle_rounds, size_t grid_length, size_t 
 }
 
 size_t min_code_distance_for_error_rate(double target_error_rate) {
-    for (size_t d = 3; d <= 100; ++d) {
+    for (size_t d = 3; d <= 100; d += 2) {
         if (surface_code_error_rate(d) < target_error_rate) {
             return d;
         }
@@ -66,7 +66,7 @@ size_t yoked_2d_yoke_cycle_rounds(size_t grid_length, size_t inner_code_distance
 ////////////////////////////////////////////////////////////
 
 size_t yoked_1d_min_inner_distance(size_t rows, size_t row_length, double target_error_rate) {
-    for (size_t d_inner = 3; d_inner <= 100; ++d_inner) {
+    for (size_t d_inner = 3; d_inner <= 100; d_inner += 2) {
         size_t yoke_rounds = yoked_1d_yoke_cycle_rounds(rows, d_inner);
         double total_error = yoked_1d_error_rate(yoke_rounds, row_length, d_inner);
         if (total_error < target_error_rate) {
@@ -77,7 +77,7 @@ size_t yoked_1d_min_inner_distance(size_t rows, size_t row_length, double target
 }
 
 size_t yoked_2d_min_inner_distance(size_t grid_length, double target_error_rate) {
-    for (size_t d_inner = 3; d_inner <= 100; ++d_inner) {
+    for (size_t d_inner = 3; d_inner <= 100; d_inner += 2) {
         size_t yoke_rounds = yoked_2d_yoke_cycle_rounds(grid_length, d_inner);
         double total_error = yoked_2d_error_rate(yoke_rounds, grid_length, d_inner);
         if (total_error < target_error_rate) {
@@ -114,14 +114,14 @@ std::map<size_t, OptimalBlock> precompute_optimal_blocks(
         // Try 1D configurations (skip if only_2d is true)
         if (!only_2d) {
         const size_t rows = kFixed1DBlockRows;
-            // row_length must be even and >= 4
-            for (size_t row_length = 4; row_length <= l + 2; row_length += 2) {
-                size_t actual_logical = rows * (row_length - 2);
+            // row_length >= 2
+            for (size_t row_length = 2; rows*row_length <= l + 2; row_length++) {
+                size_t actual_logical = rows * (row_length - 1);
                 if (actual_logical != l) continue;
                 
-                size_t d_inner = yoked_1d_min_inner_distance(rows, row_length, target_error_rate);
+                size_t d_inner = yoked_1d_min_inner_distance(rows, rows*row_length, target_error_rate);
                 size_t yoke_rounds = yoked_1d_yoke_cycle_rounds(rows, d_inner);
-                double error_rate = yoked_1d_error_rate(yoke_rounds, row_length, d_inner);
+                double error_rate = yoked_1d_error_rate(yoke_rounds, rows*row_length, d_inner);
                 
                 size_t phys = surface_code_physical_qubit_count(d_inner) * rows * row_length 
                             + surface_code_physical_qubit_count(effective_code_distance, d_inner) * (rows + row_length)

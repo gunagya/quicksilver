@@ -19,6 +19,7 @@
 
 #include "argparse.h"
 
+#include <algorithm>
 #include <sys/stat.h>
 
 ////////////////////////////////////////////////////////////
@@ -44,6 +45,7 @@ void jit_compile(std::string& trace, int64_t inst_sim, int64_t active_set_capaci
  * Retrieves the number of qubits for the given trace:
  * */
 size_t get_number_of_qubits(std::string_view);
+bool has_option(int argc, char* argv[], std::string_view option_name);
 
 } // anon
 
@@ -64,6 +66,8 @@ main(int argc, char* argv[])
 
     int64_t compute_local_memory_capacity;
     int64_t intermediate_storage_capacity;
+    int64_t cold_storage_memory_block_capacity;
+    int64_t cold_storage_inner_code_distance;
 
     int64_t factory_l2_buffer_capacity;
     int64_t factory_physical_qubit_budget;
@@ -81,6 +85,12 @@ main(int argc, char* argv[])
                       compute_local_memory_capacity, 12)
         .optional("-i", "--intermediate-storage-capacity", "Number of qubits in intermediate (1D) storage (0 = no 1D storage)",
                       intermediate_storage_capacity, 0)
+        .optional("", "--cold-storage-memory-block-capacity",
+                      "Logical qubit capacity per cold-storage block for manual yoked configs",
+                      cold_storage_memory_block_capacity, 194)
+        .optional("", "--cold-storage-inner-code-distance",
+                      "Inner code distance for cold-storage blocks in manual yoked configs",
+                      cold_storage_inner_code_distance, 11)
 
         .optional("", "--factory-l2-buffer-capacity", "Number of magic states stored in an L2 factory buffer",
                       factory_l2_buffer_capacity, 4)
@@ -125,6 +135,17 @@ main(int argc, char* argv[])
         sim::configuration::throughput_aware_factory_allocation(factory_physical_qubit_budget, l1_spec, l2_spec);
 
     /* initialize memory subsystem */
+
+    const bool cold_storage_memory_block_capacity_explicit =
+        has_option(argc, argv, "--cold-storage-memory-block-capacity");
+    if (cold_storage_memory_block_capacity <= 0) {
+        std::cerr << "ERROR: --cold-storage-memory-block-capacity must be positive\n";
+        return 1;
+    }
+    if (cold_storage_inner_code_distance <= 0) {
+        std::cerr << "ERROR: --cold-storage-inner-code-distance must be positive\n";
+        return 1;
+    }
 
     // determine number of qubits for trace:
     size_t total_qubits = get_number_of_qubits(trace_file);
@@ -242,7 +263,7 @@ main(int argc, char* argv[])
         std::cout << "==============================\n\n";
     } else {
         // Yoked: use YOKED_COLD_STORAGE class, with optional 1D intermediate storage (manual config)
-        const int memory_block_capacity = 194;
+        const size_t memory_block_capacity = static_cast<size_t>(cold_storage_memory_block_capacity);
         size_t cold_storage_qubits = main_memory_qubits;
         size_t has_1d_storage = 0;
 
@@ -263,14 +284,18 @@ main(int argc, char* argv[])
                                     15, // inner code distance
                                     MEMORY_CODE_DISTANCE);
         }
-        size_t remaining_cold_qubits = cold_storage_qubits;
         for (size_t i = idx; i < num_blocks; i++) {
-            size_t block_capacity = std::min(remaining_cold_qubits, static_cast<size_t>(memory_block_capacity));
+            size_t block_capacity = memory_block_capacity;
+            if (!cold_storage_memory_block_capacity_explicit) {
+                const size_t block_index = i - idx;
+                const size_t assigned_qubits = block_index * memory_block_capacity;
+                const size_t remaining_cold_qubits = cold_storage_qubits - assigned_qubits;
+                block_capacity = std::min(remaining_cold_qubits, memory_block_capacity);
+            }
             memory_blocks[i] = new sim::YOKED_COLD_STORAGE(m_freq_khz,
                                                 block_capacity,
-                                                11,
+                                                static_cast<size_t>(cold_storage_inner_code_distance),
                                                 MEMORY_CODE_DISTANCE);
-            remaining_cold_qubits -= block_capacity;
         }
     }   
 
@@ -423,6 +448,13 @@ get_number_of_qubits(std::string_view trace)
     uint32_t num_qubits;
     generic_strm_read(istrm, &num_qubits, 4);
     return num_qubits;
+}
+
+bool
+has_option(int argc, char* argv[], std::string_view option_name)
+{
+    return std::any_of(argv + 1, argv + argc,
+                        [option_name] (const char* arg) { return option_name == arg; });
 }
 
 ////////////////////////////////////////////////////////////

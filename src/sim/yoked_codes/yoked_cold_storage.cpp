@@ -18,7 +18,6 @@ namespace sim
 
 namespace {
 
-constexpr int check_yokes_if_idol_for = 13;
 constexpr size_t max_mem_ops_between_yoke_checks = 8;
 constexpr double error_rate_warning_threshold = 1e-15;
 
@@ -48,7 +47,10 @@ YOKED_COLD_STORAGE::YOKED_COLD_STORAGE(double freq_khz, size_t logical_qubit_cou
              4),                                                         // store_latency
         grid_length_(grid_length(logical_qubit_count)),
         inner_code_distance_(inner_code_distance), effective_code_distance_(effective_code_distance),
-        yoke_cycle_rounds_((25 * grid_length_ + 4) * inner_code_distance) {
+        yoke_cycle_rounds_((25 * grid_length_ + 4) * inner_code_distance),
+        check_yokes_if_idle_for_cycles_(
+            static_cast<size_t>(
+                std::llround(0.08 * static_cast<double>(yoke_cycle_rounds_) / effective_code_distance_))) {
     cycle_available_[0] = 1;
 }
 
@@ -99,7 +101,7 @@ long YOKED_COLD_STORAGE::operate() {
         }
         break;
     case MEMORY_OPS:
-        if (cycle_available_[0] + check_yokes_if_idol_for <= current_cycle()
+        if (cycle_available_[0] + check_yokes_if_idle_for_cycles_ <= current_cycle()
             || s_mem_ops_this_phase_ >= max_mem_ops_between_yoke_checks) {
             // Flush this phase's op count before switching back to CHECK_YOKE.
             if (s_mem_ops_this_phase_ > 0) {

@@ -37,6 +37,7 @@ class YOKED_COLD_STORAGE : public sim::STORAGE
   protected:
     const size_t grid_length_;
     const size_t yoke_cycle_rounds_;
+    const size_t check_yokes_if_idle_for_cycles_;
   
     enum PHASE {
         CHECK_YOKE,
