@@ -79,6 +79,8 @@ class YOKED_ARCHITECTURE: public COMPUTE_BASE
     uint64_t s_2d_loads_delayed{0};          // 2D/cold loads that later became non-Clifford ready
     uint64_t s_total_non_clifford_only_instruction_delay{0};
     uint64_t s_instructions_considered_for_non_clifford_delay{0};
+    uint64_t s_total_front_layer_to_retire_delay{0};
+    std::unordered_map<inst_ptr, cycle_type> front_layer_entry_cycle_;
     std::unordered_map<inst_ptr, cycle_type> non_clifford_only_block_start_cycle_;
     std::unordered_map<inst_ptr, cycle_type> non_clifford_only_instruction_delay_;
 

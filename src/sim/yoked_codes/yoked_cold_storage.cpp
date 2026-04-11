@@ -48,9 +48,7 @@ YOKED_COLD_STORAGE::YOKED_COLD_STORAGE(double freq_khz, size_t logical_qubit_cou
         grid_length_(grid_length(logical_qubit_count)),
         inner_code_distance_(inner_code_distance), effective_code_distance_(effective_code_distance),
         yoke_cycle_rounds_((25 * grid_length_ + 4) * inner_code_distance),
-        check_yokes_if_idle_for_cycles_(
-            static_cast<size_t>(
-                std::llround(0.08 * static_cast<double>(yoke_cycle_rounds_) / effective_code_distance_))) {
+        check_yokes_if_idle_for_cycles_(14) {
     cycle_available_[0] = 1;
 }
 

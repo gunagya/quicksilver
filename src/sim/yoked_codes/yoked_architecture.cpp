@@ -208,6 +208,14 @@ YOKED_ARCHITECTURE::fetch_and_execute_instructions_from_client(CLIENT* c)
                                 return ready_without_non_clifford && non_clifford_ready;
                             });
 
+    // Record the first cycle a top-level non-memory instruction becomes visible
+    // at the DAG front layer, regardless of whether it is ready to issue yet.
+    for (auto* inst : c->dag()->get_front_layer()) {
+        if (is_prefetch_instruction(inst->type) || is_memory_access(inst->type))
+            continue;
+        front_layer_entry_cycle_.try_emplace(inst, current_cycle());
+    }
+
     // print_deadlock_info(std::cout, front_layer);
 
     long success_count{0};
@@ -363,6 +371,16 @@ YOKED_ARCHITECTURE::retire_instruction(CLIENT* c, inst_ptr inst, cycle_type inst
 
     s_total_non_clifford_only_instruction_delay += non_clifford_only_instruction_delay_[inst];
     s_instructions_considered_for_non_clifford_delay++;
+
+    if (!is_memory_access(inst->type)) {
+        auto front_layer_it = front_layer_entry_cycle_.find(inst);
+        if (front_layer_it != front_layer_entry_cycle_.end()) {
+            s_total_front_layer_to_retire_delay +=
+                current_cycle() + inst_latency - front_layer_it->second;
+            front_layer_entry_cycle_.erase(front_layer_it);
+        }
+    }
+
     non_clifford_only_instruction_delay_.erase(inst);
 
     inst->cycle_done = current_cycle() + inst_latency;
@@ -462,14 +480,34 @@ YOKED_ARCHITECTURE::print_yoked_storage_stats()
         print_stat_line(std::cout, "Avg delay: 2D/cold load to non-Clifford ready (cycles)", 0.0);
     }
 
+    const uint64_t unrolled_instructions_done = client_.s_unrolled_inst_done;
+
     const double avg_non_clifford_only_instruction_delay =
-        simulation_instructions_ > 0
+        unrolled_instructions_done > 0
             ? static_cast<double>(s_total_non_clifford_only_instruction_delay)
-                / simulation_instructions_
+                / unrolled_instructions_done
             : 0.0;
     print_stat_line(std::cout,
                     "Avg instruction delay due only to non-Clifford readiness (cycles)",
                     avg_non_clifford_only_instruction_delay);
+
+    const double avg_front_layer_to_retire_delay =
+        unrolled_instructions_done > 0
+            ? static_cast<double>(s_total_front_layer_to_retire_delay)
+                / unrolled_instructions_done
+            : 0.0;
+    print_stat_line(std::cout,
+                    "Avg instruction delay from front layer to retire (cycles)",
+                    avg_front_layer_to_retire_delay);
+
+    const double readiness_share_of_front_layer_delay =
+        s_total_front_layer_to_retire_delay > 0
+            ? 100.0 * static_cast<double>(s_total_non_clifford_only_instruction_delay)
+                / s_total_front_layer_to_retire_delay
+            : 0.0;
+    print_stat_line(std::cout,
+                    "Instruction front-layer delay due only to non-Clifford readiness (%)",
+                    readiness_share_of_front_layer_delay);
 
     if (!s_unique_loaded_qubits_per_250_cycles_.empty()) {
         std::vector<uint64_t> bucket_counts;
