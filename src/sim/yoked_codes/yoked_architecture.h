@@ -57,6 +57,12 @@ class YOKED_ARCHITECTURE: public COMPUTE_BASE
     execute_result_type do_placement_access(inst_ptr, QUBIT* ld, QUBIT* st, QUBIT* evict_1d) override;
 
   private:
+    struct readiness_status_type
+    {
+        bool issuable{false};
+        bool blocked_only_by_non_clifford{false};
+    };
+
     // Track which qubits can be used for non-Clifford operations
     // - Qubits in local memory at start: true (already verified)
     // - Qubits loaded from cold storage: false (need yoke cycle)
@@ -80,10 +86,12 @@ class YOKED_ARCHITECTURE: public COMPUTE_BASE
     uint64_t s_total_non_clifford_only_instruction_delay{0};
     uint64_t s_instructions_considered_for_non_clifford_delay{0};
     uint64_t s_total_front_layer_to_retire_delay{0};
+    uint64_t s_cycles_stalled_only_by_non_clifford_readiness{0};
     std::unordered_map<inst_ptr, cycle_type> front_layer_entry_cycle_;
     std::unordered_map<inst_ptr, cycle_type> non_clifford_only_block_start_cycle_;
     std::unordered_map<inst_ptr, cycle_type> non_clifford_only_instruction_delay_;
 
+    readiness_status_type classify_instruction_readiness(const CLIENT*, inst_ptr, cycle_type) const;
     void record_memory_op_bucket(QUBIT* ld);
     void retire_instruction(CLIENT* c, inst_ptr inst, cycle_type inst_latency);
 

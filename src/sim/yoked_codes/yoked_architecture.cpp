@@ -134,6 +134,18 @@ YOKED_ARCHITECTURE::fetch_and_execute_instructions_from_client(CLIENT* c)
         }
     }
 
+    bool has_issuable_instruction{false};
+    bool has_blocked_only_by_non_clifford{false};
+    for (auto* inst : c->dag()->get_front_layer()) {
+        if (is_prefetch_instruction(inst->type))
+            continue;
+        auto readiness = classify_instruction_readiness(c, inst, current_cycle());
+        has_issuable_instruction |= readiness.issuable;
+        has_blocked_only_by_non_clifford |= readiness.blocked_only_by_non_clifford;
+    }
+    if (!has_issuable_instruction && has_blocked_only_by_non_clifford)
+        s_cycles_stalled_only_by_non_clifford_readiness++;
+
     auto front_layer = c->get_ready_instructions(
                             [&c, cc=current_cycle(), this] (const auto* inst)
                             {
@@ -142,62 +154,10 @@ YOKED_ARCHITECTURE::fetch_and_execute_instructions_from_client(CLIENT* c)
                                     return false;
 
                                 const inst_ptr inst_ptr_mut = const_cast<sim::CLIENT::inst_ptr>(inst);
-                                bool ready_without_non_clifford = true;
-                                bool requires_non_clifford_ready = false;
-                                bool non_clifford_ready = true;
-                                // Check if all qubits are available.
-                                ready_without_non_clifford &= std::all_of(inst->q_begin(), inst->q_end(),
-                                            [&c, cc] (auto q_id) { return c->qubits()[q_id]->cycle_available <= cc; });
-                                // Check if memory request can be served.
-                                if (is_memory_access(inst->type)) {
-                                    if (inst->type == INSTRUCTION::TYPE::MPLACE) {
-                                        // MPLACE needs both cold adapter (for ld) AND
-                                        // 1D adapter (for evict_1d) simultaneously.
-                                        QUBIT* ld_qubit = memory_hierarchy_->retrieve_qubit(0, inst->q_begin()[0]);
-                                        ready_without_non_clifford &= (ld_qubit != nullptr)
-                                            && (*memory_hierarchy_->lookup(ld_qubit))->has_free_adapter();
-                                        ready_without_non_clifford &= (yoked_1d_storage_ != nullptr)
-                                            && yoked_1d_storage_->has_free_adapter();
-                                    } else {
-                                        QUBIT* fetched_qubit = memory_hierarchy_->retrieve_qubit(0, inst->q_begin()[0]);
-                                        ready_without_non_clifford &= (*memory_hierarchy_->lookup(fetched_qubit))->has_free_adapter();
-                                    }
-                                } else {
-                                    // Check if all qubits are in local memory for non-memory instructions.
-                                    if(!std::all_of(inst->q_begin(), inst->q_end(),
-                                                [this] (auto q_id) {
-                                                    QUBIT* q = client_.qubits()[q_id];
-                                                    return local_memory_->contains(q);
-                                                }))
-                                        throw std::runtime_error("YOKED_ARCHITECTURE::fetch_and_execute_instructions_from_client: instruction with qubits not in local memory reached execution stage");
-                                }
-                                // If this is a T or rotation gate, check for magic state availability and non-Clifford readiness.
-                                if (is_t_like_instruction(inst->type) 
-                                    || is_rotation_instruction(inst->type) && is_t_like_instruction(inst->current_uop()->type)
-                                    || is_toffoli_like_instruction(inst->type) && is_t_like_instruction(inst->current_uop()->type)) {
-                                    ready_without_non_clifford &= count_available_magic_states() > 0;
-                                    requires_non_clifford_ready = true;
-                                    non_clifford_ready &= can_operate_non_clifford_.at(c->qubits()[inst->q_begin()[0]]);
-                                }
-
-                                if (is_cx_like_instruction(inst->type) 
-                                    || is_toffoli_like_instruction(inst->type) && is_cx_like_instruction(inst->current_uop()->type)) {
-                                    // For CX-like gates, ensure both control and target are ready for non-Clifford operations
-                                    requires_non_clifford_ready = true;
-                                    auto curr_inst = inst;
-                                    if (is_toffoli_like_instruction(inst->type))
-                                        curr_inst = inst->current_uop();
-                                    non_clifford_ready &= can_operate_non_clifford_.at(c->qubits()[curr_inst->q_begin()[0]]); // control
-                                    non_clifford_ready &= can_operate_non_clifford_.at(c->qubits()[curr_inst->q_begin()[1]]); // target
-                                }
-
-                                const bool blocked_only_by_non_clifford =
-                                    ready_without_non_clifford
-                                    && requires_non_clifford_ready
-                                    && !non_clifford_ready;
+                                auto readiness = classify_instruction_readiness(c, inst_ptr_mut, cc);
 
                                 auto active_it = non_clifford_only_block_start_cycle_.find(inst_ptr_mut);
-                                if (blocked_only_by_non_clifford) {
+                                if (readiness.blocked_only_by_non_clifford) {
                                     if (active_it == non_clifford_only_block_start_cycle_.end())
                                         non_clifford_only_block_start_cycle_[inst_ptr_mut] = current_cycle();
                                 } else if (active_it != non_clifford_only_block_start_cycle_.end()) {
@@ -205,7 +165,7 @@ YOKED_ARCHITECTURE::fetch_and_execute_instructions_from_client(CLIENT* c)
                                     non_clifford_only_block_start_cycle_.erase(active_it);
                                 }
 
-                                return ready_without_non_clifford && non_clifford_ready;
+                                return readiness.issuable;
                             });
 
     // Record the first cycle a top-level non-memory instruction becomes visible
@@ -240,10 +200,66 @@ YOKED_ARCHITECTURE::fetch_and_execute_instructions_from_client(CLIENT* c)
 
     }
 
-    // recursively call `fetch_and_execute_instruction_from_client` if progress was made
-    if (success_count)
-        success_count += fetch_and_execute_instructions_from_client(c);
     return success_count;
+}
+
+YOKED_ARCHITECTURE::readiness_status_type
+YOKED_ARCHITECTURE::classify_instruction_readiness(const CLIENT* c, inst_ptr inst, cycle_type cc) const
+{
+    readiness_status_type out;
+    if (is_prefetch_instruction(inst->type))
+        return out;
+
+    bool ready_without_non_clifford = true;
+    bool requires_non_clifford_ready = false;
+    bool non_clifford_ready = true;
+
+    ready_without_non_clifford &= std::all_of(
+        inst->q_begin(), inst->q_end(),
+        [&c, cc] (auto q_id) { return c->qubits()[q_id]->cycle_available <= cc; });
+
+    if (is_memory_access(inst->type)) {
+        if (inst->type == INSTRUCTION::TYPE::MPLACE) {
+            QUBIT* ld_qubit = memory_hierarchy_->retrieve_qubit(0, inst->q_begin()[0]);
+            ready_without_non_clifford &= (ld_qubit != nullptr)
+                && (*memory_hierarchy_->lookup(ld_qubit))->has_free_adapter();
+            ready_without_non_clifford &= (yoked_1d_storage_ != nullptr)
+                && yoked_1d_storage_->has_free_adapter();
+        } else {
+            QUBIT* fetched_qubit = memory_hierarchy_->retrieve_qubit(0, inst->q_begin()[0]);
+            ready_without_non_clifford &= (*memory_hierarchy_->lookup(fetched_qubit))->has_free_adapter();
+        }
+    } else {
+        if (!std::all_of(inst->q_begin(), inst->q_end(),
+                         [this, c] (auto q_id) {
+                             QUBIT* q = c->qubits()[q_id];
+                             return local_memory_->contains(q);
+                         }))
+            throw std::runtime_error("YOKED_ARCHITECTURE::fetch_and_execute_instructions_from_client: instruction with qubits not in local memory reached execution stage");
+    }
+
+    if (is_t_like_instruction(inst->type)
+        || is_rotation_instruction(inst->type) && is_t_like_instruction(inst->current_uop()->type)
+        || is_toffoli_like_instruction(inst->type) && is_t_like_instruction(inst->current_uop()->type)) {
+        ready_without_non_clifford &= count_available_magic_states() > 0;
+        requires_non_clifford_ready = true;
+        non_clifford_ready &= can_operate_non_clifford_.at(c->qubits()[inst->q_begin()[0]]);
+    }
+
+    if (is_cx_like_instruction(inst->type)
+        || is_toffoli_like_instruction(inst->type) && is_cx_like_instruction(inst->current_uop()->type)) {
+        requires_non_clifford_ready = true;
+        auto curr_inst = inst;
+        if (is_toffoli_like_instruction(inst->type))
+            curr_inst = inst->current_uop();
+        non_clifford_ready &= can_operate_non_clifford_.at(c->qubits()[curr_inst->q_begin()[0]]);
+        non_clifford_ready &= can_operate_non_clifford_.at(c->qubits()[curr_inst->q_begin()[1]]);
+    }
+
+    out.issuable = ready_without_non_clifford && non_clifford_ready;
+    out.blocked_only_by_non_clifford =
+        ready_without_non_clifford && requires_non_clifford_ready && !non_clifford_ready;
+    return out;
 }
 
 ////////////////////////////////////////////////////////////
@@ -279,11 +295,11 @@ YOKED_ARCHITECTURE::do_memory_access(inst_ptr inst, QUBIT* ld, QUBIT* st)
                 s_1d_loads_already_ready++;
             } else {
                 // Qubit not yet verified — record load cycle so we can measure the wait.
-                qubit_1d_load_cycle_[ld] = current_cycle();
+                qubit_1d_load_cycle_[ld] = current_cycle() + result.latency;
             }
         } else if (is_2d_load) {
             s_2d_loads++;
-            qubit_2d_load_cycle_[ld] = current_cycle();
+            qubit_2d_load_cycle_[ld] = current_cycle() + result.latency;
         }
     }
     
@@ -327,10 +343,10 @@ YOKED_ARCHITECTURE::do_placement_access(inst_ptr inst, QUBIT* ld, QUBIT* st, QUB
         std::cerr << "YOKED_ARCHITECTURE::do_placement_access: local memory swap failed\n" << _die{};
     }
 
-    // Parallel latency: cold swap and 1D swap run concurrently, then +2 for local.
+    // Parallel latency: cold swap and 1D swap run concurrently.
     cycle_type one_d_latency = convert_cycles(
         one_d_result.latency, one_d_result.storage_freq_khz, freq_khz);
-    cycle_type total_latency = std::max(cold_result.latency, one_d_latency) + 2;
+    cycle_type total_latency = std::max(cold_result.latency, one_d_latency);
 
     // Update cycle_available for all three qubits.
     ld->cycle_available       = std::max(ld->cycle_available,       current_cycle() + total_latency);
@@ -341,7 +357,7 @@ YOKED_ARCHITECTURE::do_placement_access(inst_ptr inst, QUBIT* ld, QUBIT* st, QUB
     record_memory_op_bucket(ld);
     // ld arrives from cold — counted separately from plain cold MSWAP.
     s_mplace_loads++;
-    qubit_2d_load_cycle_[ld] = current_cycle();
+    qubit_2d_load_cycle_[ld] = current_cycle() + total_latency;
     // can_operate_non_clifford_ for ld remains false (was false in cold);
     // evict_1d going to cold is handled by drain_newly_stored_qubits() in operate().
 
@@ -508,6 +524,28 @@ YOKED_ARCHITECTURE::print_yoked_storage_stats()
     print_stat_line(std::cout,
                     "Instruction front-layer delay due only to non-Clifford readiness (%)",
                     readiness_share_of_front_layer_delay);
+
+    print_stat_line(std::cout,
+                    "Cycles stalled only because of non-Clifford readiness",
+                    s_cycles_stalled_only_by_non_clifford_readiness);
+
+    const double readiness_stall_cpi_contribution =
+        unrolled_instructions_done > 0
+            ? static_cast<double>(s_cycles_stalled_only_by_non_clifford_readiness)
+                / unrolled_instructions_done
+            : 0.0;
+    print_stat_line(std::cout,
+                    "CPI contribution from non-Clifford readiness stall",
+                    readiness_stall_cpi_contribution);
+
+    const double readiness_stall_cycle_fraction =
+        current_cycle() > 0
+            ? 100.0 * static_cast<double>(s_cycles_stalled_only_by_non_clifford_readiness)
+                / current_cycle()
+            : 0.0;
+    print_stat_line(std::cout,
+                    "Cycles stalled only because of non-Clifford readiness (%)",
+                    readiness_stall_cycle_fraction);
 
     if (!s_unique_loaded_qubits_per_250_cycles_.empty()) {
         std::vector<uint64_t> bucket_counts;
