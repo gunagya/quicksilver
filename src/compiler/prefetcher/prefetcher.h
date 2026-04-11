@@ -59,6 +59,7 @@ struct stats_type
     uint64_t prefetch_hits{0};
     uint64_t cold_memory_accesses{0};
     double   median_prefetch_candidate_distance{0.0};
+    double   expected_wait_time{0.0};
 };
 
 ////////////////////////////////////////////////////////////

@@ -16,6 +16,13 @@ namespace compile
 namespace prefetcher
 {
 
+namespace
+{
+
+constexpr size_t kFullPrefetchCandidateDistance = 177;
+
+}
+
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
 
@@ -349,6 +356,22 @@ SINGLEPASS_PREFETCH::collect_stats(stats_type& stats) const
     stats.prefetch_operations = s_prefetches_emitted_;
     stats.prefetch_hits = s_prefetch_hits_;
     stats.cold_memory_accesses = s_prefetch_misses_;
+
+    const uint64_t total_memory_operations =
+        s_prefetches_emitted_ + s_prefetch_hits_ + s_prefetch_misses_;
+    double total_expected_wait_time =
+        static_cast<double>(kFullPrefetchCandidateDistance) * s_prefetch_misses_;
+    for (size_t distance : s_prefetch_candidate_distances_)
+    {
+        total_expected_wait_time += static_cast<double>(
+            std::max<int64_t>(static_cast<int64_t>(kFullPrefetchCandidateDistance)
+                                  - static_cast<int64_t>(distance),
+                              0));
+    }
+    stats.expected_wait_time = total_memory_operations > 0
+        ? total_expected_wait_time / static_cast<double>(total_memory_operations)
+        : 0.0;
+
     if (!s_prefetch_candidate_distances_.empty())
     {
         std::vector<size_t> sorted_distances = s_prefetch_candidate_distances_;

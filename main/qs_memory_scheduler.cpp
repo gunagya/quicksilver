@@ -375,6 +375,8 @@ main(int argc, char* argv[])
         print_stat_line(std::cout, "SP_PREFETCH_COLD_MEMORY_ACCESSES", sp_stats.cold_memory_accesses);
         print_stat_line(std::cout, "SP_PREFETCH_MEDIAN_CANDIDATE_DISTANCE",
                         sp_stats.median_prefetch_candidate_distance);
+        print_stat_line(std::cout, "SP_PREFETCH_EXPECTED_WAIT_TIME",
+                        sp_stats.expected_wait_time);
         print_stat_line(std::cout, "SP_PREFETCH_MISS_RATE", sp_prefetch_miss_rate);
         print_stat_line(std::cout, "SP_PREFETCH_TIME_SECONDS", sp_prefetch_time_seconds);
     }
