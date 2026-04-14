@@ -68,7 +68,7 @@ size_t yoked_2d_yoke_cycle_rounds(size_t grid_length, size_t inner_code_distance
 size_t yoked_1d_min_inner_distance(size_t rows, size_t row_length, double target_error_rate) {
     for (size_t d_inner = 3; d_inner <= 100; d_inner += 2) {
         size_t yoke_rounds = yoked_1d_yoke_cycle_rounds(rows, d_inner);
-        double total_error = yoked_1d_error_rate(yoke_rounds, row_length, d_inner);
+        double total_error = yoked_1d_error_rate(yoke_rounds, row_length*rows, d_inner);
         if (total_error < target_error_rate) {
             return d_inner;
         }
@@ -124,8 +124,7 @@ std::map<size_t, OptimalBlock> precompute_optimal_blocks(
                 double error_rate = yoked_1d_error_rate(yoke_rounds, rows*row_length, d_inner);
                 
                 size_t phys = surface_code_physical_qubit_count(d_inner) * rows * row_length 
-                            + surface_code_physical_qubit_count(effective_code_distance, d_inner) * (rows + row_length)
-                            + surface_code_physical_qubit_count(effective_code_distance);
+                            + surface_code_physical_qubit_count(effective_code_distance, d_inner) * (row_length);
                 
                 if (phys < best.physical_qubits) {
                     best.is_1d = true;

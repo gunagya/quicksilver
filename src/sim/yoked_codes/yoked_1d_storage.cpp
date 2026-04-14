@@ -70,7 +70,7 @@ YOKED_1D_STORAGE::YOKED_1D_STORAGE(double freq_khz,
       rows_(rows),
       row_length_(row_length(rows, logical_qubit_count)),
       yoke_cycle_rounds_((8*rows+2)*inner_code_distance),
-      max_mem_rounds_(10*yoke_cycle_rounds_),
+      max_mem_rounds_(4*yoke_cycle_rounds_),
       inner_code_distance_(inner_code_distance), 
       effective_code_distance_(effective_code_distance) {
     cycle_available_[0] = 1;

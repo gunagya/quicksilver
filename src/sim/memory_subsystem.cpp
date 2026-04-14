@@ -20,7 +20,7 @@ MEMORY_SUBSYSTEM::MEMORY_SUBSYSTEM(std::vector<STORAGE*>&& storages)
 {
     using MBC = routing::MULTI_CHANNEL_BUS<STORAGE>;
 
-    routing_ = std::make_unique<MBC>(storages_, 2);
+    routing_ = std::make_unique<MBC>(storages_, 1);
 }
 
 ////////////////////////////////////////////////////////////

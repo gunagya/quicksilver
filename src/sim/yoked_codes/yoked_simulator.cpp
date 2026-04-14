@@ -28,8 +28,8 @@
 namespace 
 {
 
-constexpr size_t COMPUTE_CODE_DISTANCE{25};
-constexpr size_t MEMORY_CODE_DISTANCE{25};
+constexpr size_t DEFAULT_EFFECTIVE_CODE_DISTANCE{25};
+constexpr size_t DEFAULT_1D_BLOCK_INNER_CODE_DISTANCE{15};
 constexpr double TARGET_MEMORY_ERROR_RATE{1e-15};
 
 constexpr uint64_t compute_syndrome_extraction_round_time_ns = 1200;
@@ -66,8 +66,10 @@ main(int argc, char* argv[])
 
     int64_t compute_local_memory_capacity;
     int64_t intermediate_storage_capacity;
+    int64_t intermediate_storage_inner_code_distance;
     int64_t cold_storage_memory_block_capacity;
     int64_t cold_storage_inner_code_distance;
+    int64_t effective_code_distance;
 
     int64_t factory_l2_buffer_capacity;
     int64_t factory_physical_qubit_budget;
@@ -85,12 +87,18 @@ main(int argc, char* argv[])
                       compute_local_memory_capacity, 12)
         .optional("-i", "--intermediate-storage-capacity", "Number of qubits in intermediate (1D) storage (0 = no 1D storage)",
                       intermediate_storage_capacity, 0)
+        .optional("", "--intermediate-storage-inner-code-distance",
+                      "Inner code distance for the manual intermediate (1D) storage block",
+                      intermediate_storage_inner_code_distance, DEFAULT_1D_BLOCK_INNER_CODE_DISTANCE)
         .optional("", "--cold-storage-memory-block-capacity",
                       "Logical qubit capacity per cold-storage block for manual yoked configs",
                       cold_storage_memory_block_capacity, 194)
         .optional("", "--cold-storage-inner-code-distance",
                       "Inner code distance for cold-storage blocks in manual yoked configs",
                       cold_storage_inner_code_distance, 11)
+        .optional("", "--effective-code-distance",
+                      "Effective code distance used for both compute and memory surface-code distances",
+                      effective_code_distance, DEFAULT_EFFECTIVE_CODE_DISTANCE)
 
         .optional("", "--factory-l2-buffer-capacity", "Number of magic states stored in an L2 factory buffer",
                       factory_l2_buffer_capacity, 4)
@@ -146,11 +154,20 @@ main(int argc, char* argv[])
         std::cerr << "ERROR: --cold-storage-inner-code-distance must be positive\n";
         return 1;
     }
+    if (intermediate_storage_inner_code_distance <= 0) {
+        std::cerr << "ERROR: --intermediate-storage-inner-code-distance must be positive\n";
+        return 1;
+    }
+    if (effective_code_distance <= 0) {
+        std::cerr << "ERROR: --effective-code-distance must be positive\n";
+        return 1;
+    }
 
     // determine number of qubits for trace:
     size_t total_qubits = get_number_of_qubits(trace_file);
     size_t main_memory_qubits = total_qubits - compute_local_memory_capacity;
-    const double m_freq_khz = sim::compute_freq_khz(MEMORY_CODE_DISTANCE * memory_syndrome_extraction_round_time_ns);
+    const size_t effective_code_distance_u = static_cast<size_t>(effective_code_distance);
+    const double m_freq_khz = sim::compute_freq_khz(effective_code_distance_u * memory_syndrome_extraction_round_time_ns);
     std::vector<sim::STORAGE*> memory_blocks;
     size_t num_blocks;
 
@@ -165,7 +182,7 @@ main(int argc, char* argv[])
             memory_blocks[i] = new sim::STORAGE(m_freq_khz, 
                                             /*memory_block_physical_qubits=*/0,
                                             memory_block_capacity,
-                                            MEMORY_CODE_DISTANCE,
+                                            effective_code_distance_u,
                                             1, // num adapters
                                             8, // load latency
                                             4 // store latency
@@ -178,7 +195,7 @@ main(int argc, char* argv[])
         std::cout << "\n=== Computing Optimal Memory Configuration ===\n";
         std::cout << "Target logical qubits: " << main_memory_qubits << "\n";
         std::cout << "Target error rate: " << TARGET_MEMORY_ERROR_RATE << "\n";
-        std::cout << "Effective code distance: " << MEMORY_CODE_DISTANCE << "\n";
+        std::cout << "Effective code distance: " << effective_code_distance_u << "\n";
         if (only_2d) {
             std::cout << "Mode: Only 2D blocks (no 1D blocks)\n";
         } else {
@@ -190,7 +207,7 @@ main(int argc, char* argv[])
         auto optimal_config = sim::yoked_codes::optimize_memory_config(
             main_memory_qubits,
             TARGET_MEMORY_ERROR_RATE,
-            MEMORY_CODE_DISTANCE,
+            effective_code_distance_u,
             only_2d ? 0 : MIN_1D_BLOCK_LOGICAL_QUBITS,
             only_2d,   // only_2d
             false      // verbose
@@ -244,7 +261,7 @@ main(int argc, char* argv[])
                     block.rows,
                     block.logical_qubits,
                     block.inner_code_distance,
-                    MEMORY_CODE_DISTANCE
+                    effective_code_distance_u
                 );
             } else {
                 std::cout << "  Creating 2D block: " << block.logical_qubits << " logical qubits, "
@@ -255,7 +272,7 @@ main(int argc, char* argv[])
                     m_freq_khz,
                     block.logical_qubits,
                     block.inner_code_distance,
-                    MEMORY_CODE_DISTANCE
+                    effective_code_distance_u
                 );
             }
         }
@@ -281,8 +298,8 @@ main(int argc, char* argv[])
             memory_blocks[idx++] = new sim::YOKED_1D_STORAGE(m_freq_khz,
                                     2, // rows
                                     intermediate_storage_capacity,
-                                    15, // inner code distance
-                                    MEMORY_CODE_DISTANCE);
+                                    static_cast<size_t>(intermediate_storage_inner_code_distance),
+                                    effective_code_distance_u);
         }
         for (size_t i = idx; i < num_blocks; i++) {
             size_t block_capacity = memory_block_capacity;
@@ -295,7 +312,7 @@ main(int argc, char* argv[])
             memory_blocks[i] = new sim::YOKED_COLD_STORAGE(m_freq_khz,
                                                 block_capacity,
                                                 static_cast<size_t>(cold_storage_inner_code_distance),
-                                                MEMORY_CODE_DISTANCE);
+                                                effective_code_distance_u);
         }
     }   
 
@@ -303,7 +320,7 @@ main(int argc, char* argv[])
 
     /* initialize yoked architecture (compute region) */
 
-    const double c_freq_khz = sim::compute_freq_khz(COMPUTE_CODE_DISTANCE * compute_syndrome_extraction_round_time_ns);
+    const double c_freq_khz = sim::compute_freq_khz(effective_code_distance_u * compute_syndrome_extraction_round_time_ns);
     sim::yoked_codes::YOKED_ARCHITECTURE* yoked_arch = 
         new sim::yoked_codes::YOKED_ARCHITECTURE(c_freq_khz,
                                                   compute_local_memory_capacity,
@@ -352,7 +369,7 @@ main(int argc, char* argv[])
     while (!yoked_arch->done());
 
     /* print stats */
-    size_t compute_physical_qubits = sim::configuration::surface_code_physical_qubit_count(COMPUTE_CODE_DISTANCE)
+    size_t compute_physical_qubits = sim::configuration::surface_code_physical_qubit_count(effective_code_distance_u)
                                             * compute_local_memory_capacity;
     size_t memory_physical_qubits = std::transform_reduce(memory_subsystem->storages().begin(), 
                                                             memory_subsystem->storages().end(),
