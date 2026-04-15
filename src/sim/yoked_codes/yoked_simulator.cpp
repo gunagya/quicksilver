@@ -209,6 +209,7 @@ main(int argc, char* argv[])
             TARGET_MEMORY_ERROR_RATE,
             effective_code_distance_u,
             only_2d ? 0 : MIN_1D_BLOCK_LOGICAL_QUBITS,
+            200,
             only_2d,   // only_2d
             false      // verbose
         );

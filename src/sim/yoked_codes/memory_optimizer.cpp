@@ -95,6 +95,7 @@ std::map<size_t, OptimalBlock> precompute_optimal_blocks(
     size_t max_logical_qubits,
     size_t effective_code_distance,
     double target_error_rate,
+    size_t max_2d_grid_length,
     bool only_2d,
     bool verbose) {
     
@@ -139,8 +140,8 @@ std::map<size_t, OptimalBlock> precompute_optimal_blocks(
             }
         }  // end if (!only_2d)
         
-        // Try 2D configuration
-        for (size_t grid_length = 4; grid_length <= 200; grid_length += 4) {
+        // Try 2D configuration, capped by the caller-provided maximum grid length.
+        for (size_t grid_length = 4; grid_length <= max_2d_grid_length; grid_length += 4) {
             size_t actual_logical = (grid_length - 2) * (grid_length - 2) - 2;
             if (actual_logical != l) continue;
             
@@ -400,11 +401,18 @@ DPState optimize_memory_config(
     double target_error_rate,
     size_t effective_code_distance,
     size_t min_1d_size,
+    size_t max_2d_grid_length,
     bool only_2d,
     bool verbose) {
     
     size_t max_precompute = std::min(target_logical_qubits + 500, size_t(2500));
-    auto optimal_blocks = precompute_optimal_blocks(max_precompute, effective_code_distance, target_error_rate, only_2d, verbose);
+    auto optimal_blocks = precompute_optimal_blocks(
+        max_precompute,
+        effective_code_distance,
+        target_error_rate,
+        max_2d_grid_length,
+        only_2d,
+        verbose);
     
     if (optimal_blocks.empty()) {
         return DPState();

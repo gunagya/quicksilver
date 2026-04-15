@@ -6,6 +6,7 @@
 #include "sim/yoked_codes/yoked_cold_storage.h"
 #include "sim/configuration/resource_estimation.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <ios>
@@ -18,7 +19,8 @@ namespace sim
 
 namespace {
 
-constexpr size_t max_mem_ops_between_yoke_checks = 8;
+// Limit how long a cold block can remain in MEMORY_OPS before it must run a yoke check.
+constexpr cycle_type max_mem_ops_phase_cycles = 100;
 constexpr double error_rate_warning_threshold = 1e-15;
 
 size_t grid_length(size_t logical_qubit_count) {
@@ -69,6 +71,10 @@ YOKED_COLD_STORAGE::drain_newly_stored_qubits()
 }
 
 STORAGE::access_result_type YOKED_COLD_STORAGE::do_memory_access(QUBIT* ld, QUBIT* st) {
+    if (current_phase_ != MEMORY_OPS || yoke_check_requested_) {
+        return STORAGE::access_result_type{};
+    }
+
     auto result = STORAGE::do_memory_access(ld, st);
     if (result.success) {
         // Track the qubit loaded from cold storage (st is being stored, ld is being loaded)
@@ -77,6 +83,15 @@ STORAGE::access_result_type YOKED_COLD_STORAGE::do_memory_access(QUBIT* ld, QUBI
         s_mem_ops_this_phase_++;
     }
     return result;
+}
+
+bool YOKED_COLD_STORAGE::has_memory_access_in_flight() const {
+    return std::any_of(
+        cycle_available_.begin(),
+        cycle_available_.end(),
+        [cc = current_cycle()](cycle_type cycle_available) {
+            return cycle_available > cc;
+        });
 }
 
 long YOKED_COLD_STORAGE::operate() {
@@ -89,6 +104,8 @@ long YOKED_COLD_STORAGE::operate() {
             r_ = 0;
             yoke_cycle_progress_ = 0;
             current_phase_ = MEMORY_OPS;
+            memory_ops_phase_start_cycle_ = current_cycle();
+            yoke_check_requested_ = false;
             
             for (QUBIT* q : unverified_loaded_qubits_) {
                 newly_verified_qubits_.push_back(q);
@@ -99,14 +116,20 @@ long YOKED_COLD_STORAGE::operate() {
         }
         break;
     case MEMORY_OPS:
-        if (cycle_available_[0] + check_yokes_if_idle_for_cycles_ <= current_cycle()
-            || s_mem_ops_this_phase_ >= max_mem_ops_between_yoke_checks) {
+        if (!yoke_check_requested_
+            && (current_cycle() - memory_ops_phase_start_cycle_ >= max_mem_ops_phase_cycles
+                || cycle_available_[0] + check_yokes_if_idle_for_cycles_ <= current_cycle())) {
+            yoke_check_requested_ = true;
+        }
+
+        if (yoke_check_requested_ && !has_memory_access_in_flight()) {
             // Flush this phase's op count before switching back to CHECK_YOKE.
             if (s_mem_ops_this_phase_ > 0) {
                 s_total_mem_ops_active_ += s_mem_ops_this_phase_;
                 s_active_mem_phases_++;
             }
             s_mem_ops_this_phase_ = 0;
+            yoke_check_requested_ = false;
             current_phase_ = CHECK_YOKE;
             cycle_available_[0] = current_cycle() + 2;
             ro_++;

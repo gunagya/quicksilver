@@ -108,6 +108,7 @@ std::map<size_t, OptimalBlock> precompute_optimal_blocks(
     size_t max_logical_qubits,
     size_t effective_code_distance,
     double target_error_rate,
+    size_t max_2d_grid_length = 200,
     bool only_2d = false,
     bool verbose = true);
 
@@ -143,6 +144,7 @@ DPState optimize_memory_config(
     double target_error_rate,
     size_t effective_code_distance,
     size_t min_1d_size = 0,
+    size_t max_2d_grid_length = 200,
     bool only_2d = false,
     bool verbose = false);
 

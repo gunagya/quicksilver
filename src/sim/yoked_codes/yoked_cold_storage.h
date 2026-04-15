@@ -58,8 +58,13 @@ class YOKED_COLD_STORAGE : public sim::STORAGE
     uint64_t s_mem_ops_this_phase_{0};   // ops in the current MEMORY_OPS phase
     uint64_t s_total_mem_ops_active_{0}; // sum across phases that served ≥1 op
     uint64_t s_active_mem_phases_{0};    // count of phases that served ≥1 op
+    cycle_type memory_ops_phase_start_cycle_{0};
+    bool yoke_check_requested_{false};
 
     virtual long operate() override;
+
+  private:
+    bool has_memory_access_in_flight() const;
 };
 
 }  // namespace sim

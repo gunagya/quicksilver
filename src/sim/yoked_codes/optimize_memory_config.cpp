@@ -26,6 +26,7 @@ constexpr size_t SWEEP_MIN_LOGICAL_QUBITS = 100;
 constexpr size_t SWEEP_MAX_LOGICAL_QUBITS = 2500;
 constexpr std::array<size_t, 5> MIN_1D_SIZES = {4, 8, 16, 24, 32};
 constexpr size_t DEFAULT_MIN_1D_BLOCK_LOGICAL_QUBITS = 0;
+constexpr size_t DEFAULT_MAX_2D_GRID_LENGTH = 200;
 
 void
 write_constraint_rows(std::ofstream&           csv,
@@ -62,6 +63,9 @@ print_usage(const char* argv0)
     std::cerr << "  --min-1d-size N:       Minimum logical size required for a 1D block "
                  "(default: " << DEFAULT_MIN_1D_BLOCK_LOGICAL_QUBITS
               << ", single-run mode only)\n";
+    std::cerr << "  --effective-code-distance N: Use a fixed effective code distance instead of deriving it from the target error rate\n";
+    std::cerr << "  --max-2d-grid-length N: Maximum 2D grid length considered during optimization "
+                 "(default: " << DEFAULT_MAX_2D_GRID_LENGTH << ")\n";
     std::cerr << "  --only-2d:             Restrict single-run mode to 2D blocks only\n";
 }
 
@@ -82,6 +86,8 @@ main(int argc, char* argv[])
         bool only_2d = false;
         bool min_1d_size_overridden = false;
         size_t min_1d_size = DEFAULT_MIN_1D_BLOCK_LOGICAL_QUBITS;
+        size_t effective_code_distance_override = 0;
+        size_t max_2d_grid_length = DEFAULT_MAX_2D_GRID_LENGTH;
         std::vector<std::string> positional_args;
 
         for (int i = 1; i < argc; ++i)
@@ -106,10 +112,43 @@ main(int argc, char* argv[])
                 min_1d_size = std::stoull(argv[++i]);
                 min_1d_size_overridden = true;
             }
+            else if (arg == "--max-2d-grid-length")
+            {
+                if (i + 1 >= argc)
+                {
+                    std::cerr << "Error: --max-2d-grid-length requires a value\n";
+                    print_usage(argv[0]);
+                    return 1;
+                }
+                max_2d_grid_length = std::stoull(argv[++i]);
+            }
+            else if (arg == "--effective-code-distance")
+            {
+                if (i + 1 >= argc)
+                {
+                    std::cerr << "Error: --effective-code-distance requires a value\n";
+                    print_usage(argv[0]);
+                    return 1;
+                }
+                effective_code_distance_override = std::stoull(argv[++i]);
+            }
             else
             {
                 positional_args.push_back(arg);
             }
+        }
+
+        if (effective_code_distance_override > 0 && effective_code_distance_override < 3)
+        {
+            std::cerr << "Error: --effective-code-distance must be at least 3\n";
+            print_usage(argv[0]);
+            return 1;
+        }
+        if (max_2d_grid_length < 4)
+        {
+            std::cerr << "Error: --max-2d-grid-length must be at least 4\n";
+            print_usage(argv[0]);
+            return 1;
         }
 
         if (do_sweep)
@@ -140,14 +179,21 @@ main(int argc, char* argv[])
                       << SWEEP_MIN_LOGICAL_QUBITS << " to " << SWEEP_MAX_LOGICAL_QUBITS << "...\n";
             std::cout << "Target error rate per logical qubit per round: " << target_error_rate << "\n";
 
-            const size_t effective_code_distance = min_code_distance_for_error_rate(target_error_rate);
-            std::cout << "Calculated effective code distance: " << effective_code_distance << "\n\n";
+            const size_t effective_code_distance =
+                effective_code_distance_override > 0
+                    ? effective_code_distance_override
+                    : min_code_distance_for_error_rate(target_error_rate);
+            if (effective_code_distance_override > 0)
+                std::cout << "Fixed effective code distance: " << effective_code_distance << "\n\n";
+            else
+                std::cout << "Calculated effective code distance: " << effective_code_distance << "\n\n";
 
             std::cout << "Precomputing mixed 1D/2D optimal blocks once...\n";
             const auto mixed_optimal_blocks = precompute_optimal_blocks(
                 SWEEP_MAX_LOGICAL_QUBITS,
                 effective_code_distance,
                 target_error_rate,
+                max_2d_grid_length,
                 false,
                 false);
 
@@ -156,6 +202,7 @@ main(int argc, char* argv[])
                 SWEEP_MAX_LOGICAL_QUBITS,
                 effective_code_distance,
                 target_error_rate,
+                max_2d_grid_length,
                 true,
                 false);
 
@@ -174,13 +221,13 @@ main(int argc, char* argv[])
 
             csv << "min_1d_size,logical_qubits,physical_qubits\n";
 
-            std::cout << "Running DP sweep for only-2D storage...\n";
-            const auto only_2d_physical_qubits = optimal_physical_qubits_by_target(
+            std::cout << "Running DP sweep for min_1d_size=0...\n";
+            const auto unconstrained_physical_qubits = optimal_physical_qubits_by_target(
                 SWEEP_MAX_LOGICAL_QUBITS,
-                only_2d_optimal_blocks,
+                mixed_optimal_blocks,
                 0,
                 false);
-            write_constraint_rows(csv, "only_2d", only_2d_physical_qubits);
+            write_constraint_rows(csv, "0", unconstrained_physical_qubits);
 
             for (size_t sweep_min_1d_size : MIN_1D_SIZES)
             {
@@ -218,8 +265,14 @@ main(int argc, char* argv[])
         std::cout << "Target logical memory qubits: " << memory_logical_qubits << "\n";
         std::cout << "Target error rate per logical qubit per round: " << target_error_rate << "\n";
 
-        const size_t effective_code_distance = min_code_distance_for_error_rate(target_error_rate);
-        std::cout << "Calculated effective code distance: " << effective_code_distance << "\n";
+        const size_t effective_code_distance =
+            effective_code_distance_override > 0
+                ? effective_code_distance_override
+                : min_code_distance_for_error_rate(target_error_rate);
+        if (effective_code_distance_override > 0)
+            std::cout << "Fixed effective code distance: " << effective_code_distance << "\n";
+        else
+            std::cout << "Calculated effective code distance: " << effective_code_distance << "\n";
         if (only_2d)
             std::cout << "Mode: only 2D blocks\n";
         else
@@ -231,6 +284,7 @@ main(int argc, char* argv[])
             target_error_rate,
             effective_code_distance,
             only_2d ? 0 : min_1d_size,
+            max_2d_grid_length,
             only_2d,
             false);
 
