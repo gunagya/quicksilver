@@ -1,0 +1,11 @@
+benchmark,baseline_i0_csm194_memory_physical_qubits,c4_i8_csm194_memory_physical_qubits
+bose_hubbard_q,1057008,1070468
+bose_hubbard_t,1057008,1070468
+chromium_q_prepare,88084,101544
+chromium_q_select,88084,101544
+chromium_t,88084,101544
+ethylene_oxide_q_prepare,176168,189628
+ethylene_oxide_q_select,176168,189628
+ethylene_oxide_t,176168,189628
+grover_3sat,792756,806216
+shor_rsa24,88084,101544

@@ -1,0 +1,11 @@
+benchmark,baseline_ipc,ideal_ipc,cache_lru_ipc,cache_rri_ipc,prefetch_lru_ipc,prefetch_rri_ipc
+bose_hubbard_q,0.109,0.65,0.396,0.458,0.568,0.57
+bose_hubbard_t,0.281,0.901,0.832,0.867,0.898,0.895
+chromium_q_prepare,0.097,0.638,0.499,0.537,0.632,0.629
+chromium_q_select,0.011,0.138,0.01,0.015,0.052,0.026
+chromium_t,0.069,0.512,0.053,0.097,0.229,0.124
+ethylene_oxide_q_prepare,0.126,0.714,0.525,0.558,0.685,0.681
+ethylene_oxide_q_select,0.017,0.211,0.041,0.068,0.102,0.091
+ethylene_oxide_t,0.212,0.824,0.766,0.774,0.824,0.82
+grover_3sat,0.368,1.04,0.63,0.648,0.95,0.868
+shor_rsa24,0.221,0.911,0.425,0.444,0.713,0.663
