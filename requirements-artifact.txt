@@ -1,0 +1,8 @@
+# Plot generation and interactive use of results/paper_plots.ipynb.
+# The runner and CSV extractors otherwise use the Python standard library.
+matplotlib>=3.7
+numbers-parser>=4.19
+nbformat>=5.9
+nbclient>=0.8
+ipykernel>=6.25
+jupyterlab>=4.0

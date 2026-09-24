@@ -12,15 +12,10 @@ from __future__ import annotations
 import csv
 import re
 from pathlib import Path
-from typing import Optional
+from extraction_common import DEFAULT_LOG_DIR, parse_args, select_benchmarks
 
-SIM_LOGS_BASE = (
-    Path(__file__).resolve().parent.parent
-    / "build"
-    / "yoked_codes_run_all_workloads"
-    / "logs"
-    / "simulate"
-)
+SIM_LOGS_BASE = DEFAULT_LOG_DIR / "simulate"
+BENCHMARK_FILTER = None
 
 FIRSTPASS_DIR = SIM_LOGS_BASE / "firstpass"
 CACHE_DIR = SIM_LOGS_BASE / "cache"
@@ -83,7 +78,7 @@ def get_benchmarks() -> list[str]:
     """Get benchmark directory names from firstpass logs."""
     if not FIRSTPASS_DIR.exists():
         raise FileNotFoundError(f"Directory not found: {FIRSTPASS_DIR}")
-    return sorted(p.name for p in FIRSTPASS_DIR.iterdir() if p.is_dir())
+    return select_benchmarks((p.name for p in FIRSTPASS_DIR.iterdir() if p.is_dir()), BENCHMARK_FILTER)
 
 
 def collect_rows() -> list[dict[str, object]]:
@@ -136,10 +131,18 @@ def write_csv(rows: list[dict[str, object]], output_file: Path) -> None:
 
 
 def main() -> None:
+    global SIM_LOGS_BASE, FIRSTPASS_DIR, CACHE_DIR, PREFETCH_DIR, BENCHMARK_FILTER
+    args = parse_args(__doc__)
+    SIM_LOGS_BASE = args.log_dir / "simulate"
+    FIRSTPASS_DIR = SIM_LOGS_BASE / "firstpass"
+    CACHE_DIR = SIM_LOGS_BASE / "cache"
+    PREFETCH_DIR = SIM_LOGS_BASE / "prefetch"
+    BENCHMARK_FILTER = args.benchmarks
     rows = collect_rows()
-    output_file = Path(__file__).resolve().parent / "nonclifford_readiness_stats_c4_i8.csv"
-    write_csv(rows, output_file)
-    print(f"Wrote {len(rows)} rows to {output_file}")
+    for filename in ("readiness_latency.csv", "verification_stalls_impact.csv"):
+        output_file = args.output_dir / filename
+        write_csv(rows, output_file)
+        print(f"Wrote {len(rows)} rows to {output_file}")
 
 
 if __name__ == "__main__":

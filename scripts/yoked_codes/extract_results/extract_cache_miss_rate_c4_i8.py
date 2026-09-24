@@ -11,7 +11,7 @@ Expected files per benchmark:
     - c4_i8_rri_csm194.log
 
 Output CSV:
-  results/cache_miss_rate_c4_i8.csv
+  results/cache_prefetch_policies.csv
 
 Rows are benchmarks, columns include policy-specific metrics.
 """
@@ -22,19 +22,15 @@ import csv
 import re
 from pathlib import Path
 from typing import Optional
+from extraction_common import DEFAULT_LOG_DIR, DEFAULT_OUTPUT_DIR, parse_args, select_benchmarks
 
-SIM_LOGS_BASE = (
-    Path(__file__).resolve().parent.parent
-    / "build"
-    / "yoked_codes_run_all_workloads"
-    / "logs"
-    / "simulate"
-)
+SIM_LOGS_BASE = DEFAULT_LOG_DIR / "simulate"
+BENCHMARK_FILTER = None
 CACHE_DIR = SIM_LOGS_BASE / "cache"
 COMPILE_BASE = SIM_LOGS_BASE.parent / "compile"
 COMPILE_CACHE_DIR = COMPILE_BASE / "cache"
 COMPILE_PREFETCH_DIR = COMPILE_BASE / "prefetch"
-OUT_CSV = Path(__file__).resolve().parent / "cache_miss_rate_c4_i8.csv"
+OUT_CSV = DEFAULT_OUTPUT_DIR / "cache_prefetch_policies.csv"
 CSM_TAG = "csm194"
 
 MISS_RATE_RE = re.compile(
@@ -110,7 +106,7 @@ def get_benchmarks() -> list[str]:
     """Get benchmark names from cache log subdirectories."""
     if not CACHE_DIR.exists():
         raise FileNotFoundError(f"Cache directory not found: {CACHE_DIR}")
-    return sorted(p.name for p in CACHE_DIR.iterdir() if p.is_dir())
+    return select_benchmarks((p.name for p in CACHE_DIR.iterdir() if p.is_dir()), BENCHMARK_FILTER)
 
 
 def collect_rows() -> list[dict[str, object]]:
@@ -190,6 +186,15 @@ def write_csv(rows: list[dict[str, object]]) -> None:
 
 
 def main() -> None:
+    global SIM_LOGS_BASE, CACHE_DIR, COMPILE_BASE, COMPILE_CACHE_DIR, COMPILE_PREFETCH_DIR, OUT_CSV, BENCHMARK_FILTER
+    args = parse_args(__doc__)
+    SIM_LOGS_BASE = args.log_dir / "simulate"
+    CACHE_DIR = SIM_LOGS_BASE / "cache"
+    COMPILE_BASE = args.log_dir / "compile"
+    COMPILE_CACHE_DIR = COMPILE_BASE / "cache"
+    COMPILE_PREFETCH_DIR = COMPILE_BASE / "prefetch"
+    OUT_CSV = args.output_dir / "cache_prefetch_policies.csv"
+    BENCHMARK_FILTER = args.benchmarks
     rows = collect_rows()
     write_csv(rows)
     print(f"Wrote {len(rows)} rows to {OUT_CSV}")

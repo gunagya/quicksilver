@@ -28,14 +28,15 @@ import csv
 import re
 from pathlib import Path
 from typing import Optional
+from extraction_common import DEFAULT_LOG_DIR, DEFAULT_OUTPUT_DIR, parse_args, select_benchmarks
 
-ROOT = Path(__file__).resolve().parents[1]
-SIM_BASE = ROOT / "build" / "yoked_codes_run_all_workloads" / "logs" / "simulate"
+SIM_BASE = DEFAULT_LOG_DIR / "simulate"
+BENCHMARK_FILTER = None
 FIRSTPASS_DIR = SIM_BASE / "firstpass"
 CACHE_DIR = SIM_BASE / "cache"
 PREFETCH_DIR = SIM_BASE / "prefetch"
 
-OUT_CSV = ROOT / "results" / "logical_qubit_round_error_rates_csm194.csv"
+OUT_CSV = DEFAULT_OUTPUT_DIR / "logical_qubit_round_error_rates_csm194.csv"
 
 TOTAL_CYCLES_RE = re.compile(r"^TOTAL_SIMULATION_CYCLES\s+([0-9]+)\s*$")
 UNROLLED_INSTR_DONE_RE = re.compile(r"^UNROLLED_INSTRUCTIONS_DONE\s+([0-9]+)\s*$")
@@ -49,7 +50,8 @@ def parse_log(log_path: Path) -> dict[str, Optional[float | int]]:
     """Parse one simulation log and return metrics.
 
     Missing metrics are returned as None, except summed cold errors default to 0.0 when
-    at least one file is parsed and no cold section appears.
+    at least one file is parsed and no cold section appears. A cold section
+    without its own numeric rate makes the summed cold rate unavailable.
     """
     result: dict[str, Optional[float | int]] = {
         "storage_1d_error_rate": None,
@@ -65,6 +67,8 @@ def parse_log(log_path: Path) -> dict[str, Optional[float | int]]:
     storage_1d_sum = 0.0
     storage_1d_seen = False
     cold_sum = 0.0
+    cold_sections = 0
+    cold_sections_with_rates: set[int] = set()
 
     with log_path.open("r", encoding="utf-8") as handle:
         for raw_line in handle:
@@ -86,6 +90,7 @@ def parse_log(log_path: Path) -> dict[str, Optional[float | int]]:
                 continue
 
             if stripped.startswith("YOKED_COLD_STORAGE Error Stats:"):
+                cold_sections += 1
                 current_section = SECTION_COLD
                 continue
 
@@ -99,9 +104,12 @@ def parse_log(log_path: Path) -> dict[str, Optional[float | int]]:
                 storage_1d_seen = True
             elif current_section == SECTION_COLD:
                 cold_sum += value
+                cold_sections_with_rates.add(cold_sections)
 
     result["storage_1d_error_rate"] = storage_1d_sum if storage_1d_seen else None
-    result["cold_storage_error_rate_sum"] = cold_sum
+    result["cold_storage_error_rate_sum"] = (
+        cold_sum if len(cold_sections_with_rates) == cold_sections else None
+    )
     return result
 
 
@@ -142,7 +150,7 @@ def get_benchmarks() -> list[str]:
         for p in d.iterdir():
             if p.is_dir():
                 names.add(p.name)
-    return sorted(names)
+    return select_benchmarks(names, BENCHMARK_FILTER)
 
 
 def collect_rows() -> list[dict[str, object]]:
@@ -221,6 +229,14 @@ def write_csv(rows: list[dict[str, object]]) -> None:
 
 
 def main() -> None:
+    global SIM_BASE, FIRSTPASS_DIR, CACHE_DIR, PREFETCH_DIR, OUT_CSV, BENCHMARK_FILTER
+    args = parse_args(__doc__)
+    SIM_BASE = args.log_dir / "simulate"
+    FIRSTPASS_DIR = SIM_BASE / "firstpass"
+    CACHE_DIR = SIM_BASE / "cache"
+    PREFETCH_DIR = SIM_BASE / "prefetch"
+    OUT_CSV = args.output_dir / "logical_qubit_round_error_rates_csm194.csv"
+    BENCHMARK_FILTER = args.benchmarks
     if not SIM_BASE.exists():
         raise FileNotFoundError(f"Missing simulation logs directory: {SIM_BASE}")
 

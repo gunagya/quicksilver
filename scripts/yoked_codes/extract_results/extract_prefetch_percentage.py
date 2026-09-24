@@ -4,9 +4,8 @@ Extract the percentage of PREFETCHES_INSERTED as a fraction of total memory acce
 (prefetch_inserted + cache_hits + cold_memory_accesses) for c4_i8_lru_mld0 across all benchmarks.
 """
 
-import os
 import csv
-from pathlib import Path
+from extraction_common import parse_args
 
 def extract_prefetch_metrics(log_file):
     """
@@ -49,13 +48,16 @@ def calculate_prefetch_percentage(metrics):
 
 def main():
     # Base path to log files
-    log_base_path = Path('/nethome/gmamak3/quicksilver/build/yoked_codes_run_all_workloads/logs/compile/prefetch')
+    args = parse_args(__doc__)
+    log_base_path = args.log_dir / "compile" / "prefetch"
     
     # Find all benchmark directories with c4_i8_lru_mld0.log
     results = []
     
     for log_file in sorted(log_base_path.glob('*/c4_i8_lru_mld0.log')):
         benchmark_name = log_file.parent.name
+        if args.benchmarks is not None and benchmark_name not in args.benchmarks:
+            continue
         metrics = extract_prefetch_metrics(log_file)
         
         if metrics:
@@ -70,7 +72,7 @@ def main():
             })
     
     # Output results as CSV to stdout and to file
-    output_file = Path(__file__).parent / 'prefetch_percentage_c4_i8_lru_mld0.csv'
+    output_file = args.output_dir / 'prefetch_percentage.csv'
     
     if results:
         # Print to stdout

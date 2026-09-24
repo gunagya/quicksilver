@@ -2,10 +2,8 @@
 """Build an IPC matrix for c4 runs across policies and intermediate capacities.
 
 Rows are (intermediate_capacity_i, policy) for:
-- cache_lru
 - cache_rri
 - prefetch_lru
-- prefetch_rri
 
 Plus extra rows for baseline and ideal from firstpass:
 - (0, baseline)
@@ -20,17 +18,16 @@ import csv
 import re
 from pathlib import Path
 from typing import Optional
+from extraction_common import DEFAULT_LOG_DIR, parse_args, select_benchmarks
 
-ROOT = Path(__file__).resolve().parent.parent
-SIM_DIR = ROOT / "build" / "yoked_codes_run_all_workloads" / "logs" / "simulate"
+SIM_DIR = DEFAULT_LOG_DIR / "simulate"
+BENCHMARK_FILTER = None
 FIRSTPASS_DIR = SIM_DIR / "firstpass"
 CACHE_DIR = SIM_DIR / "cache"
 PREFETCH_DIR = SIM_DIR / "prefetch"
 
 IPC_RE = re.compile(r"^IPC\s+([0-9.eE+-]+)\s*$")
 CSM_TAG = "csm194"
-I_FROM_CACHE_RE = re.compile(rf"^c4_i(\d+)_(lru|rri)_{CSM_TAG}\.log$")
-I_FROM_PREFETCH_RE = re.compile(rf"^c4_i(\d+)_(lru|rri)_mld0_{CSM_TAG}\.log$")
 
 
 def parse_ipc(log_file: Path) -> Optional[float]:
@@ -53,29 +50,12 @@ def parse_ipc(log_file: Path) -> Optional[float]:
 def get_benchmarks() -> list[str]:
     if not FIRSTPASS_DIR.exists():
         raise FileNotFoundError(f"Missing directory: {FIRSTPASS_DIR}")
-    return sorted(p.name for p in FIRSTPASS_DIR.iterdir() if p.is_dir())
+    return select_benchmarks((p.name for p in FIRSTPASS_DIR.iterdir() if p.is_dir()), BENCHMARK_FILTER)
 
 
 def discover_intermediate_capacities(benchmarks: list[str]) -> list[int]:
-    """Find all i values that appear in cache/prefetch c4 csm194 filenames."""
-    values: set[int] = set()
-
-    for benchmark in benchmarks:
-        cache_bench_dir = CACHE_DIR / benchmark
-        if cache_bench_dir.exists():
-            for p in cache_bench_dir.glob(f"c4_i*_*_{CSM_TAG}.log"):
-                m = I_FROM_CACHE_RE.match(p.name)
-                if m:
-                    values.add(int(m.group(1)))
-
-        prefetch_bench_dir = PREFETCH_DIR / benchmark
-        if prefetch_bench_dir.exists():
-            for p in prefetch_bench_dir.glob(f"c4_i*_*_mld0_{CSM_TAG}.log"):
-                m = I_FROM_PREFETCH_RE.match(p.name)
-                if m:
-                    values.add(int(m.group(1)))
-
-    return sorted(values)
+    """Return the paper's capacities, independent of unrelated logs on disk."""
+    return [4, 8, 16, 24]
 
 
 def build_row(i_value: int, policy: str, benchmarks: list[str]) -> dict[str, object]:
@@ -115,10 +95,8 @@ def build_rows(benchmarks: list[str], i_values: list[int]) -> list[dict[str, obj
     rows.append(build_row(0, "ideal", benchmarks))
 
     for i_value in i_values:
-        rows.append(build_row(i_value, "cache_lru", benchmarks))
         rows.append(build_row(i_value, "cache_rri", benchmarks))
         rows.append(build_row(i_value, "prefetch_lru", benchmarks))
-        rows.append(build_row(i_value, "prefetch_rri", benchmarks))
 
     return rows
 
@@ -133,15 +111,22 @@ def write_csv(rows: list[dict[str, object]], benchmarks: list[str], output_file:
 
 
 def main() -> None:
+    global SIM_DIR, FIRSTPASS_DIR, CACHE_DIR, PREFETCH_DIR, BENCHMARK_FILTER
+    args = parse_args(__doc__)
+    SIM_DIR = args.log_dir / "simulate"
+    FIRSTPASS_DIR = SIM_DIR / "firstpass"
+    CACHE_DIR = SIM_DIR / "cache"
+    PREFETCH_DIR = SIM_DIR / "prefetch"
+    BENCHMARK_FILTER = args.benchmarks
     benchmarks = get_benchmarks()
     i_values = discover_intermediate_capacities(benchmarks)
     rows = build_rows(benchmarks, i_values)
 
-    output_file = Path(__file__).resolve().parent / "ipc_matrix_c4.csv"
+    output_file = args.output_dir / "sensitivity_buffer_capacity.csv"
     write_csv(rows, benchmarks, output_file)
 
     print(f"Wrote {len(rows)} rows for {len(benchmarks)} benchmarks to {output_file}")
-    print(f"Discovered i values: {i_values}")
+    print(f"Paper buffer capacities: {i_values}")
 
 
 if __name__ == "__main__":

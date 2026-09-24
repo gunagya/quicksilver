@@ -3,9 +3,11 @@
 
 Scans build/yoked_codes_run_all_workloads/logs/simulate for a restricted set of
 runs (all must be csm-tagged and must NOT include "csd" in the filename):
-- firstpass baseline: c4_baseline0_i0_csmX.log
+- firstpass baseline: c4_baseline0_i0_csm194.log
 - cache policy:       c4_i8_rri_csmX.log
 - prefetch policy:    c4_i8_lru_mld0_csmX.log
+
+X is restricted to the paper block sizes 34, 98, 194, 322, and 482.
 
 For each matching log, extracts:
 - IPC
@@ -25,10 +27,12 @@ import csv
 import re
 from pathlib import Path
 from typing import Optional
+from extraction_common import DEFAULT_LOG_DIR, DEFAULT_OUTPUT_DIR, parse_args
 
-ROOT = Path(__file__).resolve().parent.parent
-SIM_DIR = ROOT / "build" / "yoked_codes_run_all_workloads" / "logs" / "simulate"
-OUT_CSV = Path(__file__).resolve().parent / "csm_csd_memory_stats.csv"
+SIM_DIR = DEFAULT_LOG_DIR / "simulate"
+OUT_CSV = DEFAULT_OUTPUT_DIR / "sensitivity_block_size.csv"
+BENCHMARK_FILTER = None
+PAPER_BLOCK_SIZES = {34, 98, 194, 322, 482}
 
 BASELINE_RE = re.compile(r"^c4_baseline0_i0_csm(?P<csm>\d+)\.log$")
 CACHE_RRI_RE = re.compile(r"^c4_i8_rri_csm(?P<csm>\d+)\.log$")
@@ -89,6 +93,8 @@ def collect_rows() -> list[dict[str, object]]:
 
         simulation_mode = rel.parts[0]   # firstpass/cache/prefetch
         benchmark = rel.parts[1]
+        if BENCHMARK_FILTER is not None and benchmark not in BENCHMARK_FILTER:
+            continue
 
         # Restrict to c4 baseline i0, c4_i8 cache rri, and c4_i8 prefetch lru.
         csm_match: Optional[re.Match[str]] = None
@@ -103,6 +109,8 @@ def collect_rows() -> list[dict[str, object]]:
             continue
 
         csm = int(csm_match.group("csm"))
+        if csm not in PAPER_BLOCK_SIZES or (simulation_mode == "firstpass" and csm != 194):
+            continue
         csd: Optional[int] = None
         intermediate_capacity_i = extract_i_from_filename(log_path.name)
 
@@ -163,6 +171,11 @@ def write_csv(rows: list[dict[str, object]]) -> None:
 
 
 def main() -> None:
+    global SIM_DIR, OUT_CSV, BENCHMARK_FILTER
+    args = parse_args(__doc__)
+    SIM_DIR = args.log_dir / "simulate"
+    OUT_CSV = args.output_dir / "sensitivity_block_size.csv"
+    BENCHMARK_FILTER = args.benchmarks
     rows = collect_rows()
     write_csv(rows)
     print(f"Wrote {len(rows)} rows to {OUT_CSV}")

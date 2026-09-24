@@ -4,14 +4,15 @@ Extract IPC values for c4_i8 runs from simulation logs.
 Creates a CSV with baseline, ideal, cache lru/rri, and prefetch lru/rri IPCs per benchmark.
 """
 
-import os
 import re
 import csv
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional
+from extraction_common import DEFAULT_LOG_DIR, parse_args, select_benchmarks
 
 # Base path to simulation logs
-SIM_LOGS_BASE = Path(__file__).parent.parent / "build" / "yoked_codes_run_all_workloads" / "logs" / "simulate"
+SIM_LOGS_BASE = DEFAULT_LOG_DIR / "simulate"
+BENCHMARK_FILTER = None
 CSM_TAG = "csm194"
 
 def extract_ipc(log_path: Path) -> Optional[float]:
@@ -43,7 +44,7 @@ def get_benchmarks() -> list:
         if item.is_dir():
             benchmarks.append(item.name)
     
-    return sorted(benchmarks)
+    return select_benchmarks(benchmarks, BENCHMARK_FILTER)
 
 def collect_ipc_data() -> list:
     """Collect IPC data for all benchmarks."""
@@ -106,13 +107,17 @@ def write_csv(data: list, output_path: Path) -> None:
 
 def main():
     """Main entry point."""
+    global SIM_LOGS_BASE, BENCHMARK_FILTER
+    args = parse_args(__doc__)
+    SIM_LOGS_BASE = args.log_dir / "simulate"
+    BENCHMARK_FILTER = args.benchmarks
     print(f"Reading logs from: {SIM_LOGS_BASE}")
     
     # Collect data
     data = collect_ipc_data()
     
     # Determine output path
-    output_path = Path(__file__).parent / "ipc_c4_i8.csv"
+    output_path = args.output_dir / "main_results.csv"
     
     # Write CSV
     write_csv(data, output_path)

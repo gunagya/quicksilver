@@ -19,7 +19,7 @@ import argparse
 import os
 import shlex
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 
@@ -226,6 +226,8 @@ def build_cache_secondpass_command(
     compute_capacity: int,
     intermediate_capacity: int,
     eviction_policy: str,
+    *,
+    instruction_limit: int | None = None,
 ) -> list[str]:
     stage_a_dummy_output = (
         MEM_SECONDPASS_CACHE_DIR
@@ -241,7 +243,11 @@ def build_cache_secondpass_command(
         "-s",
         "0",
         "-i",
-        str(secondpass_compile_inst_limit(benchmark)),
+        str(
+            secondpass_compile_inst_limit(benchmark)
+            if instruction_limit is None
+            else instruction_limit
+        ),
         "-pp",
         "0",
         "--enable-rri-placer",
@@ -261,6 +267,8 @@ def build_prefetch_secondpass_command(
     compute_capacity: int,
     intermediate_capacity: int,
     eviction_policy: str,
+    *,
+    instruction_limit: int | None = None,
 ) -> list[str]:
     stage_a_dummy_output = (
         MEM_SECONDPASS_PREFETCH_DIR
@@ -276,7 +284,11 @@ def build_prefetch_secondpass_command(
         "-s",
         "0",
         "-i",
-        str(secondpass_compile_inst_limit(benchmark)),
+        str(
+            secondpass_compile_inst_limit(benchmark)
+            if instruction_limit is None
+            else instruction_limit
+        ),
         "-pp",
         "0",
         "--enable-singlepass-prefetch",
@@ -352,6 +364,241 @@ def build_yoked_simulator_command(
     if effective_code_distance is not None:
         cmd.extend(["--effective-code-distance", str(effective_code_distance)])
     return cmd
+
+
+@dataclass(frozen=True)
+class PaperRunStep:
+    """One command in the paper workflow, in dependency order."""
+
+    benchmark: str
+    stage: str
+    command: tuple[str, ...]
+    log_path: Path
+    output_path: Path | None = None
+
+
+@dataclass(frozen=True)
+class _PaperSimulation:
+    kind: str
+    compute_capacity: int
+    intermediate_capacity: int = 0
+    eviction_policy: str = ""
+    baseline: int | None = None
+    simulator: SimulatorConfig = SimulatorConfig(194)
+
+
+def _paper_simulation_points() -> list[_PaperSimulation]:
+    """The union of simulation settings consumed by paper_plots.ipynb."""
+    points: list[_PaperSimulation] = []
+    secondpass_modes = (("cache", "rri"), ("prefetch", "lru"))
+
+    # Main IPC figure and compute-capacity sensitivity (i8_by_c).
+    for compute_capacity in (4, 8, 12, 16):
+        for baseline in (0, 1):
+            points.append(
+                _PaperSimulation("firstpass", compute_capacity, baseline=baseline)
+            )
+        for kind, policy in secondpass_modes:
+            points.append(_PaperSimulation(kind, compute_capacity, 8, policy))
+
+    # The main IPC figure also compares Trident-D with LRU.
+    points.append(_PaperSimulation("cache", 4, 8, "lru"))
+
+    # Intermediate-capacity sensitivity (c4); i8 was added above.
+    for intermediate_capacity in (4, 16, 24):
+        for kind, policy in secondpass_modes:
+            points.append(_PaperSimulation(kind, 4, intermediate_capacity, policy))
+
+    # Cold-storage capacity sensitivity (c4/i8); csm194 was added above.
+    for capacity in (34, 98, 322, 482):
+        for kind, policy in secondpass_modes:
+            points.append(
+                _PaperSimulation(
+                    kind, 4, 8, policy, simulator=SimulatorConfig(capacity)
+                )
+            )
+
+    # Other notebook tables and diagnostics reuse these simulations, plus the
+    # c4/i8/lru prefetch compilation log. No extra experiment is required.
+    return points
+
+
+def build_paper_plan(
+    benchmarks: list[BenchmarkConfig],
+    *,
+    build_dir: Path,
+    raw_bin_dir: Path,
+    run_dir: Path,
+    instruction_limit: int | None = None,
+) -> list[PaperRunStep]:
+    """Build the exact paper workflow without running commands or writing files.
+
+    Each benchmark needs 19 compilations and 31 simulations. Compiled traces
+    live under run_dir/binaries and logs under run_dir/logs. The existing
+    command builders remain the single source of compiler/simulator flags.
+
+    An instruction_limit sets the simulation limit for short validation runs.
+    Second-pass compilation retains two million instructions of lookahead and
+    first-pass compilation retains another two million. These margins keep the
+    existing DAG readers away from EOF without changing compiler/simulator code.
+    Without it the benchmark's original limits and second-pass subtraction are
+    preserved.
+
+    This function briefly overrides and then restores the legacy path globals.
+    Build plans before starting workers; concurrent calls to this function or
+    the legacy runner in the same process are not supported.
+    """
+    if instruction_limit is not None and instruction_limit <= 0:
+        raise ValueError("instruction_limit must be a positive integer")
+
+    build_dir = Path(build_dir).expanduser().resolve()
+    raw_bin_dir = Path(raw_bin_dir).expanduser().resolve()
+    run_dir = Path(run_dir).expanduser().resolve()
+    binary_dir = run_dir / "binaries"
+    paths = {
+        "BUILD_DIR": build_dir,
+        "RAW_BIN_DIR": raw_bin_dir,
+        "MEM_DIR": binary_dir,
+        "MEM_FIRSTPASS_DIR": binary_dir / "firstpass",
+        "MEM_SECONDPASS_DIR": binary_dir / "secondpass",
+        "MEM_SECONDPASS_CACHE_DIR": binary_dir / "secondpass" / "cache",
+        "MEM_SECONDPASS_PREFETCH_DIR": binary_dir / "secondpass" / "prefetch",
+        "RUN_OUTPUT_DIR": run_dir,
+        "LOG_DIR": run_dir / "logs",
+    }
+    previous_paths = {name: globals()[name] for name in paths}
+    plan: list[PaperRunStep] = []
+    points = _paper_simulation_points()
+
+    def append_step(
+        benchmark: BenchmarkConfig,
+        stage: str,
+        command: list[str],
+        log_path: Path,
+        output_path: Path | None = None,
+    ) -> None:
+        command[0] = str(build_dir / Path(command[0]).name)
+        plan.append(
+            PaperRunStep(
+                benchmark.label, stage, tuple(command), log_path, output_path
+            )
+        )
+
+    def secondpass_paths(
+        point: _PaperSimulation, benchmark: BenchmarkConfig
+    ) -> tuple[Path, Path]:
+        binary_builder = (
+            cache_binary_path if point.kind == "cache" else prefetch_binary_path
+        )
+        log_builder = cache_log_path if point.kind == "cache" else prefetch_log_path
+        args = (
+            benchmark,
+            point.compute_capacity,
+            point.intermediate_capacity,
+            point.eviction_policy,
+        )
+        return binary_builder(*args), log_builder(*args)
+
+    globals().update(paths)
+    try:
+        for original_benchmark in benchmarks:
+            benchmark = (
+                original_benchmark
+                if instruction_limit is None
+                else replace(
+                    original_benchmark,
+                    compile_inst_limit=instruction_limit + 2 * SECOND_PASS_INST_LIMIT_DELTA,
+                    sim_instructions=instruction_limit,
+                )
+            )
+            compute_capacities = sorted({p.compute_capacity for p in points})
+            for compute_capacity in compute_capacities:
+                append_step(
+                    benchmark,
+                    "compile",
+                    build_firstpass_compile_command(benchmark, compute_capacity),
+                    firstpass_log_path(benchmark, compute_capacity),
+                    firstpass_binary_path(benchmark, compute_capacity),
+                )
+
+            # A trace can serve several simulation settings; compile it once.
+            compiled: set[tuple[str, int, int, str]] = set()
+            for point in points:
+                if point.kind == "firstpass":
+                    continue
+                key = (
+                    point.kind,
+                    point.compute_capacity,
+                    point.intermediate_capacity,
+                    point.eviction_policy,
+                )
+                if key in compiled:
+                    continue
+                compiled.add(key)
+                binary_path, log_path = secondpass_paths(point, benchmark)
+                command_builder = (
+                    build_cache_secondpass_command
+                    if point.kind == "cache"
+                    else build_prefetch_secondpass_command
+                )
+                append_step(
+                    benchmark,
+                    "compile",
+                    command_builder(
+                        benchmark,
+                        point.compute_capacity,
+                        point.intermediate_capacity,
+                        point.eviction_policy,
+                        instruction_limit=(
+                            None if instruction_limit is None
+                            else instruction_limit + SECOND_PASS_INST_LIMIT_DELTA
+                        ),
+                    ),
+                    log_path,
+                    binary_path,
+                )
+
+            for point in points:
+                if point.kind == "firstpass":
+                    binary_path = firstpass_binary_path(
+                        benchmark, point.compute_capacity
+                    )
+                    log_path = firstpass_simulation_log_path(
+                        benchmark,
+                        point.compute_capacity,
+                        bool(point.baseline),
+                        point.simulator,
+                    )
+                else:
+                    binary_path, _ = secondpass_paths(point, benchmark)
+                    log_path = simulation_log_path(
+                        point.kind,
+                        benchmark,
+                        point.compute_capacity,
+                        point.intermediate_capacity,
+                        point.eviction_policy,
+                        point.simulator,
+                    )
+                append_step(
+                    benchmark,
+                    "simulate",
+                    build_yoked_simulator_command(
+                        binary_path,
+                        benchmark,
+                        point.compute_capacity,
+                        point.intermediate_capacity,
+                        baseline=point.baseline,
+                        cold_storage_memory_block_capacity=point.simulator.cold_storage_memory_block_capacity,
+                        cold_storage_inner_code_distance=point.simulator.cold_storage_inner_code_distance,
+                        intermediate_storage_inner_code_distance=point.simulator.intermediate_storage_inner_code_distance,
+                        effective_code_distance=point.simulator.effective_code_distance,
+                    ),
+                    log_path,
+                )
+    finally:
+        globals().update(previous_paths)
+
+    return plan
 
 
 def run_command(cmd: list[str], desc: str, log_path: Path | None = None) -> str | None:
