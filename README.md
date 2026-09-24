@@ -30,8 +30,10 @@ CSV extraction alone uses the Python standard library. The Python packages above
 are required for `--plots` and interactive notebook use, including reading the
 Numbers spreadsheets on Linux without Apple Numbers.
 
-The artifact distribution must include these compressed input binaries under
-`benchmarks/bin/` (or a directory supplied with `--binary-dir`):
+Download the compressed benchmark binaries from
+[Zenodo (DOI: 10.5281/zenodo.22931705)](https://doi.org/10.5281/zenodo.22931705)
+and place the `.xz` files in `benchmarks/bin/`. Keep the binaries compressed.
+Alternatively, use `--binary-dir` to specify their location. The required files are:
 
 | Benchmark label for `--benchmarks` | Raw binary |
 | --- | --- |
@@ -46,9 +48,9 @@ The artifact distribution must include these compressed input binaries under
 | `shor_rsa24` | `shor_modmult_N16777259_a3_pow0.xz` |
 | `grover_3sat` | `BQ_grover_3sat_schoning_1710.xz` |
 
-These files total approximately 314 MB compressed and are ignored by Git. A Git
-checkout alone does not supply them: include `benchmarks/bin/*.xz` in the artifact
-archive. The runner checks for the selected inputs and does not download them.
+These files total approximately 314 MB compressed and are ignored by Git, so a
+Git checkout alone does not supply them. The runner checks for the selected
+inputs and does not download them automatically.
 
 ## Reproduce the figures and tables
 
